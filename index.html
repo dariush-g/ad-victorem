@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ad Victorem</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+      canvas { display: block; }
+      #hud { position: fixed; inset: 0; pointer-events: none; color: #fff7e6; user-select: none;
+        font-family: 'Trajan Pro', 'Cinzel', Georgia, 'Times New Roman', serif; text-transform: uppercase;
+        letter-spacing: 2px; text-shadow: 2px 2px 0 #1a1210, -1px -1px 0 #1a1210, 1px -1px 0 #1a1210, -1px 1px 0 #1a1210; }
+      #rank { position: absolute; left: 28px; top: 20px; }
+      #rank .title { font-size: 26px; font-weight: bold; color: #f0c050; }
+      #rank .sub { font-size: 13px; opacity: 0.9; }
+      #hint { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center; font-size: 14px;
+        transition: opacity 0.4s; }
+      #hint b { color: #f0c050; }
+    </style>
+  </head>
+  <body>
+    <div id="hud">
+      <div id="rank"><div class="title">Servus</div><div class="sub">Slave · Wooden rudis</div></div>
+      <div id="hint"><b>Click</b> to take control · <b>WASD</b> move · <b>Shift</b> run · <b>Space</b> jump · <b>Left click</b> swing · <b>G</b> go limp</div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
