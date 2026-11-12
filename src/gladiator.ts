@@ -1,8 +1,10 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { mat, simplifyTexture, PALETTE } from './style';
 import { Verlet } from './ragdoll';
+import { Outfit } from './outfit';
+import { analyzeBody } from './garments';
+import { ITEMS, SLOTS, buildWeapon, disposeTree, type Slot } from './items';
 
 // Body: "Universal Base Characters" by Quaternius (CC0) — see public/models/gladiator/LICENSE.txt
 const MODEL_DIR = '/models/gladiator/';
@@ -25,6 +27,7 @@ export interface Controls {
   backpedal: boolean; // walking backward: keep facing the aim direction instead of turning round
   ragdoll: boolean; // toggle: go limp / get up
   aimYaw: number; // facing angle to snap to when attacking
+  threat: number; // distance to the nearest enemy, metres (Infinity if none)
 }
 
 interface Arm {
@@ -61,13 +64,6 @@ const HEAD = 0, NECK = 1, PELV = 2, SHL = 3, ELL = 4, HAL = 5, SHR = 6, ELR = 7,
 
 const { lerp, clamp } = THREE.MathUtils;
 const ease = (t: number) => t * t * (3 - 2 * t);
-
-/** Smooth surface of revolution through (radius, y) control points, y ascending. */
-function lathe(ctrl: [number, number][], radial = 40, steps = 30) {
-  const curve = new THREE.SplineCurve(ctrl.map(([r, y]) => new THREE.Vector2(r, y)));
-  const pts = curve.getPoints(steps).map((p) => new THREE.Vector2(Math.max(0.0004, p.x), p.y));
-  return new THREE.LatheGeometry(pts, radial);
-}
 
 const _m = new THREE.Matrix4();
 const _x = new THREE.Vector3(), _y = new THREE.Vector3(), _z = new THREE.Vector3();
@@ -147,6 +143,17 @@ export class Gladiator {
   private curlL = 0.72; // left-hand finger curl, radians
   private smoothed: Record<string, number> = {};
   private pelvisBone: THREE.Object3D;
+  private outfit: Outfit;
+  private weaponMount: THREE.Group;
+  private weapon: THREE.Object3D | null = null;
+  private worn = Object.fromEntries(SLOTS.map((s) => [s, null])) as Record<Slot, string | null>;
+  private reachMul = FIST_REACH;
+  /** Standing height in metres, measured from the model. */
+  height = 1.8;
+  /** Multiplier on walking and running speed (agility). */
+  speedMul = 1;
+  private onGuard = false; // an enemy is near (or we just swung): weapon up
+  private guardHold = 0; // seconds the guard stays up after a swing
 
   private rag: Verlet | null = null;
   private ragT = 0;
@@ -169,7 +176,8 @@ export class Gladiator {
       const hairy = /hair/i.test(old.name), eye = /eye/i.test(old.name);
       // painted muscle detail is simplified to broad shapes so the body matches the clean arena
       const map = old.map && !hairy && !eye ? simplifyTexture(old.map) : old.map;
-      const m = mat(hairy ? PALETTE.hair : 0xffffff, { rim: eye ? 0 : 0.3, map }); // hair texture is greyscale, meant to be tinted
+      const m = mat(hairy ? PALETTE.hair : 0xffffff, { rim: eye ? 0 : 0.3, map, surface: 'skin' });
+      if (eye) m.roughness = 0.2; // hair texture is greyscale, meant to be tinted
       if (alphaTest) {
         m.alphaTest = alphaTest;
         m.side = THREE.DoubleSide;
@@ -179,6 +187,7 @@ export class Gladiator {
       mesh.frustumCulled = false; // skinned bounds don't follow the pose
     };
     model.traverse((o) => restyle(o));
+    this.height = new THREE.Box3().setFromObject(model).max.y;
 
     const bone = (name: string) => {
       const b = model.getObjectByName(name);
@@ -302,38 +311,19 @@ export class Gladiator {
       }
     }
 
-    // ---- props that ride on the driver rig ----
-    const cloth = mat(PALETTE.linen, { rim: 0.2 });
-    const leather = mat(PALETTE.leather, { rim: 0.2 });
-    const wood = mat(PALETTE.wood, { rim: 0.2 });
-    const woodDark = mat(PALETTE.woodDark, { rim: 0.2 });
-    const mesh = (geo: THREE.BufferGeometry, mat: THREE.Material, parent: THREE.Object3D, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1) => {
-      const m = new THREE.Mesh(geo, mat);
-      m.castShadow = m.receiveShadow = true;
-      m.position.set(x, y, z);
-      m.scale.set(sx, sy, sz);
-      parent.add(m);
-      return m;
-    };
-
-    // loincloth: wrap, belt, hanging flaps
-    const W = CLOTH;
-    mesh(lathe([[0, -0.17], [0.09, -0.16], [0.16, -0.08], [0.165, 0.0], [0.15, 0.07], [0.14, 0.11]]), cloth, this.hips, 0, W.y, W.z, W.sx, 1, W.sz);
-    const belt = mesh(new THREE.TorusGeometry(0.148, 0.02, 16, 64), leather, this.hips, 0, W.y + 0.085, W.z, W.sx, W.sz, 1);
-    belt.rotation.x = Math.PI / 2;
-    const flapGeo = new RoundedBoxGeometry(0.2, 0.27, 0.018, 4, 0.008);
-    mesh(flapGeo, cloth, this.hips, 0, W.y - 0.17, W.z + 0.165 * W.sz - 0.006).rotation.x = -0.06;
-    mesh(flapGeo, cloth, this.hips, 0, W.y - 0.17, W.z - 0.165 * W.sz + 0.006).rotation.x = 0.06;
-
-    // wooden training sword (rudis) in the right fist; blade runs along local +Y
-    const sword = group(this.armR.hand, new THREE.Vector3(GRIP.x, GRIP.y, GRIP.z));
-    sword.rotation.x = Math.PI / 2;
-    mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.17, 24), woodDark, sword);
-    mesh(new THREE.SphereGeometry(0.034, 24, 18), woodDark, sword, 0, -0.1, 0);
-    mesh(new RoundedBoxGeometry(0.17, 0.035, 0.055, 4, 0.014), woodDark, sword, 0, 0.095, 0);
-    mesh(new RoundedBoxGeometry(0.062, 0.62, 0.024, 4, 0.01), wood, sword, 0, 0.42, 0);
-    const tip = mesh(new THREE.ConeGeometry(0.044, 0.1, 4), wood, sword, 0, 0.78, 0, 1, 1, 0.4);
-    tip.rotation.y = Math.PI / 4;
+    // ---- gear that rides on the driver rig: clothing, and a mount in the right fist ----
+    let skin: THREE.SkinnedMesh | null = null; // the body proper: the biggest skinned mesh
+    model.traverse((o) => {
+      const sm = o as THREE.SkinnedMesh;
+      if (sm.isSkinnedMesh && (!skin || sm.geometry.getAttribute('position').count > skin.geometry.getAttribute('position').count)) skin = sm;
+    });
+    if (!skin) throw new Error('gladiator model has no skinned mesh');
+    this.outfit = new Outfit(
+      { root: this.root, hips: this.hips, upperChest: this.upperChest, head: this.head, armR: this.armR, legs: [this.legL, this.legR], body: analyzeBody(skin), bone: wp },
+      ground,
+    );
+    this.weaponMount = group(this.armR.hand, new THREE.Vector3(GRIP.x, GRIP.y, GRIP.z));
+    this.weaponMount.rotation.x = Math.PI / 2; // weapons are built blade-along-+Y
 
     this.joints = [
       this.hips, this.spine, this.head,
@@ -348,8 +338,45 @@ export class Gladiator {
     this.root.rotation.y = this.facing;
   }
 
+  /**
+   * Stand square for the character sheet: arms straight out and feet together, or (`spread`)
+   * arms raised and legs apart. Only poses the rig — the next update() takes over again.
+   * Returns false while ragdolled.
+   */
+  posePortrait(spread: boolean): boolean {
+    if (this.rag) return false;
+    const { hips, armL, armR, legL, legR } = this;
+    hips.position.set(0, this.pelvisY, this.pelvisZ);
+    for (const j of this.joints) j.rotation.set(0, 0, 0);
+    const arm = Math.PI / 2 + (spread ? 0.42 : 0), leg = spread ? 0.3 : 0.03;
+    armL.upper.rotation.z = arm;
+    armR.upper.rotation.z = -arm;
+    this.weaponMount.visible = false; // empty hands for the study; update() brings it back
+    legL.upper.rotation.z = leg;
+    legR.upper.rotation.z = -leg;
+    this.root.updateMatrixWorld(true);
+    this.syncModel();
+    return true;
+  }
+
+  /** Wear or wield an item (null = take it off). */
+  equip(slot: Slot, id: string | null) {
+    if (this.worn[slot] === id) return;
+    this.worn[slot] = id;
+    if (slot !== 'weapon') this.outfit.set(slot, id);
+    else {
+      if (this.weapon) disposeTree(this.weapon);
+      this.weapon = id ? buildWeapon(id) : null;
+      if (this.weapon) this.weaponMount.add(this.weapon);
+      this.reachMul = id ? (ITEMS[id].reach ?? 1) : FIST_REACH;
+    }
+  }
+
   get attacking() {
     return this.attackT >= 0;
+  }
+  get grounded() {
+    return this.onGround;
   }
   get ragdolled() {
     return this.rag !== null;
@@ -357,13 +384,19 @@ export class Gladiator {
 
   update(dt: number, c: Controls) {
     if (dt <= 0) return;
+    this.weaponMount.visible = true;
     this.time += dt;
     this.lastDt = dt;
+
+    // guard goes up when an enemy comes close and drops once they are well clear
+    this.guardHold = this.attacking ? GUARD_HOLD : Math.max(0, this.guardHold - dt);
+    this.onGuard = c.threat < (this.onGuard ? GUARD_EXIT : GUARD_ENTER) || this.guardHold > 0;
 
     if (this.rag) this.updateRagdoll(dt, c);
     else if (c.ragdoll && this.blendT >= GETUP_TIME) this.startRagdoll();
     else this.updateActive(dt, c);
     this.syncModel();
+    this.outfit.update(dt);
   }
 
   /** Copy the driver rig's pose onto the skinned body's bones. */
@@ -409,7 +442,7 @@ export class Gladiator {
       if (!this.struck && t >= this.attack.strikeAt) {
         this.struck = true;
         const dir = new THREE.Vector3(Math.sin(this.facing), 0, Math.cos(this.facing));
-        this.onStrike(this.pos.clone(), dir, this.attack.reach);
+        this.onStrike(this.pos.clone(), dir, this.attack.reach * this.reachMul);
       }
       if (t >= 1) this.attackT = -1;
     }
@@ -423,7 +456,7 @@ export class Gladiator {
       this.vel.z = Math.cos(this.facing) * sp;
     } else {
       // finite acceleration, so starts, stops and turns carry weight
-      const top = c.backpedal ? WALK * BACKPEDAL : c.sprint ? RUN : WALK;
+      const top = (c.backpedal ? WALK * BACKPEDAL : c.sprint ? RUN : WALK) * this.speedMul;
       const tx = moving ? c.moveX * top : 0, tz = moving ? c.moveZ * top : 0;
       const dvx = tx - this.vel.x, dvz = tz - this.vel.z;
       const dv = Math.hypot(dvx, dvz);
@@ -504,30 +537,40 @@ export class Gladiator {
     this.phase += (dirSign * dt * v * Math.PI) / (2 * A);
     const ph = this.phase, cph = Math.cos(ph), sph = Math.sin(ph);
     const breath = Math.sin(this.time * 1.9);
+    // Idle life: layered slow waves at unrelated rates, so the ready stance never loops visibly.
+    const t = this.time;
+    const shift = Math.sin(t * 0.7); // weight drifting from foot to foot
+    // still pose: arms hanging at ease, or the ready stance while on guard
+    const guard = ease(this.ease('guard', this.onGuard ? 1 : 0, this.onGuard ? 7 : 3.5, dt));
+    for (const ch of CHANNELS) _still[ch] = lerp(RELAXED[ch], READY[ch], guard);
+    const live = 0.35 + 0.65 * guard; // hanging arms drift less than a held guard
+    const bounce = Math.sin(t * 2.7) * guard; // fighter's weight bounce on the knees
+    const swordBob = (Math.sin(t * 1.3 + 0.4) + 0.4 * Math.sin(t * 2.9)) * live;
+    const guardBob = (Math.sin(t * 1.1 + 2.0) + 0.4 * Math.sin(t * 2.3 + 1.0)) * live;
     const TAU = Math.PI * 2;
     const pos = (x: number) => 0.25 * (1 + x) * (1 + x); // smooth "positive part" of a -1..1 wave (no kinks)
 
     // ---- base pose: ready stance when still, blending into the stride when moving ----
     const swing = (0.38 + 0.5 * run) * (backward ? 0.6 : 1);
     const lagE = Math.cos(ph - 0.55), lagW = Math.cos(ph - 1.1);
-    const R = READY;
+    const R = _still;
     const pose: Pose = {
       // right arm: sword up in guard, or a relaxed carry swinging with the stride
-      rS: lerp(R.rS, -0.12 + cph * swing * 0.6, amt) + breath * 0.012 * idle,
-      rO: lerp(R.rO, -0.28, amt),
+      rS: lerp(R.rS, -0.12 + cph * swing * 0.6, amt) + (breath * 0.025 + swordBob * 0.045) * idle,
+      rO: lerp(R.rO, -0.28, amt) + Math.sin(t * 0.9 + 1.2) * 0.03 * idle,
       rY: lerp(R.rY, 0, amt),
-      rE: lerp(R.rE, -0.7 - run * 0.5 - pos(-lagE) * 0.3, amt),
+      rE: lerp(R.rE, -0.7 - run * 0.5 - pos(-lagE) * 0.3, amt) + Math.sin(t * 1.3 + 1.3) * 0.07 * live * idle,
       rR: 0,
-      rW: lerp(R.rW, 0.08 + lagW * 0.12, amt),
+      rW: lerp(R.rW, 0.08 + lagW * 0.12, amt) + Math.sin(t * 1.7 + 0.2) * 0.09 * live * idle, // sword tip circles
       // left arm: forward for balance, or a pendulum trailing the stride
-      lS: lerp(R.lS, -cph * swing + 0.04, amt) + breath * 0.012 * idle,
-      lO: lerp(R.lO, 0.13 + 0.06 * run - pos(cph) * 0.05, amt),
-      lE: lerp(R.lE, -(0.42 + run) - pos(lagE) * 0.4, amt),
-      twist: lerp(R.twist, -cph * 0.26, amt),
-      lean: lerp(R.lean, 0.03 + run * 0.2, amt) + clamp(this.accF * 0.012, -0.16, 0.2) - (backward ? 0.07 * amt : 0),
-      roll: clamp(-this.accL * 0.01, -0.18, 0.18) - sph * 0.03 * amt,
-      drop: lerp(R.drop, 0.055 + 0.05 * run, amt) + this.squat + breath * 0.005 * idle,
-      hipYaw: lerp(R.hipYaw, cph * 0.14, amt),
+      lS: lerp(R.lS, -cph * swing + 0.04, amt) + (breath * 0.025 + guardBob * 0.04) * idle,
+      lO: lerp(R.lO, 0.13 + 0.06 * run - pos(cph) * 0.05, amt) + Math.sin(t * 0.8 + 0.5) * 0.03 * idle,
+      lE: lerp(R.lE, -(0.42 + run) - pos(lagE) * 0.4, amt) + Math.sin(t * 1.1 + 2.9) * 0.08 * live * idle,
+      twist: lerp(R.twist, -cph * 0.26, amt) + Math.sin(t * 0.55 + 1.0) * 0.05 * idle,
+      lean: lerp(R.lean, 0.03 + run * 0.2, amt) + clamp(this.accF * 0.012, -0.16, 0.2) - (backward ? 0.07 * amt : 0) + (bounce * 0.012 + breath * 0.012) * idle,
+      roll: clamp(-this.accL * 0.01, -0.18, 0.18) - sph * 0.03 * amt + shift * 0.022 * idle,
+      drop: lerp(R.drop, 0.055 + 0.05 * run, amt) + this.squat + (bounce * 0.013 + breath * 0.007) * idle,
+      hipYaw: lerp(R.hipYaw, cph * 0.14, amt) - Math.sin(t * 0.55 + 1.0) * 0.025 * idle,
       fzL: R.fzL * idle,
       fzR: R.fzR * idle,
       width: R.width * idle,
@@ -562,7 +605,7 @@ export class Gladiator {
     const bob = -Math.cos(2 * ph) * (0.03 + 0.015 * run) * gait;
     const pelvisY = this.pelvisY - pose.drop + bob + (grounded ? Math.min(0, L.gy, Rr.gy) * 0.8 : 0);
     // weight shifts over the planted foot; idle: slow sway
-    hips.position.set(-sph * 0.026 * gait + Math.sin(this.time * 0.7) * 0.008 * idle, pelvisY, this.pelvisZ);
+    hips.position.set(-sph * 0.026 * gait + shift * 0.016 * idle, pelvisY, this.pelvisZ);
     hips.rotation.set(0, pose.hipYaw, sph * 0.05 * gait);
 
     const k = 1 - Math.exp(-40 * dt);
@@ -598,7 +641,13 @@ export class Gladiator {
     this.chest.rotation.set(pose.lean * 0.35 + breath * 0.008, pose.twist * 0.35, pose.roll * 0.35);
     this.upperChest.rotation.set(pose.lean * 0.35 + breath * 0.012, pose.twist * 0.4, pose.roll * 0.35);
     // eyes stay level and on the target, whatever the hips and shoulders do
-    head.rotation.set(-pose.lean * 0.55, -(pose.twist + pose.hipYaw) * 0.8, -pose.roll * 0.6);
+    // idle: the head scans the arena, nods with the breath, and tilts a little (fades out when moving or striking)
+    const look = E('look', idle * (1 - w), 5);
+    head.rotation.set(
+      -pose.lean * 0.55 + (Math.sin(t * 0.61 + 0.5) * 0.05 + breath * 0.015) * look,
+      -(pose.twist + pose.hipYaw) * 0.8 + (Math.sin(t * 0.43) * 0.2 + Math.sin(t * 1.07 + 1.3) * 0.07) * look,
+      -pose.roll * 0.6 + Math.sin(t * 0.37 + 2.0) * 0.04 * look,
+    );
   }
 
   /** Two-bone IK in the leg's sagittal plane: put the ankle at (tz, ty) from the hip. */
@@ -837,7 +886,18 @@ const ATTACKS: Record<'stand' | 'walk' | 'run', Attack> = {
   },
 };
 
+/** At ease: feet nearly level, both arms hanging, sword carried low with its tip forward. */
+const RELAXED: Pose = {
+  rS: 0.04, rO: -0.1, rY: 0, rE: -0.22, rR: 0, rW: 0.42,
+  lS: 0.03, lO: 0.09, lE: -0.2,
+  twist: 0.03, lean: 0.02, roll: 0, drop: 0.015, hipYaw: -0.08,
+  fzL: 0.07, fzR: -0.05, width: 0.02,
+};
+const GUARD_ENTER = 4.5, GUARD_EXIT = 5.5; // metres to the nearest enemy
+const GUARD_HOLD = 1.5; // seconds the guard stays up after a swing
+
 const _pose = { ...READY };
+const _still = { ...READY };
 /** Pose of an attack at t = 0..1 (holds the first key before it is reached). */
 function samplePose(atk: Attack, t: number): Pose {
   const keys = atk.keys;
@@ -850,6 +910,6 @@ function samplePose(atk: Attack, t: number): Pose {
 }
 
 // --- fit tuning for props on the body ---
+const FIST_REACH = 0.6; // bare-handed: a punch reaches this fraction of a sword swing
 const FIST_CURL = 1.3; // right hand gripping the sword, radians per finger joint
 const GRIP = { x: 0.03, y: -0.09, z: 0.0 }; // sword grip, relative to the right wrist
-const CLOTH = { y: 0.02, z: 0.012, sx: 1.16, sz: 0.95 }; // loincloth placement/scale on the pelvis

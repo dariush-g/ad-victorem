@@ -34,12 +34,12 @@ export interface Mover {
 
 export function createArena(scene: THREE.Scene) {
   // stonework carries a baked top-to-bottom gradient in its vertex colours
-  const stone = mat(PALETTE.stone, { side: THREE.DoubleSide, vertexColors: true });
-  const stoneDark = mat(PALETTE.stoneDark, { side: THREE.DoubleSide, vertexColors: true });
-  const marble = mat(PALETTE.marble);
-  const wood = mat(PALETTE.wood, { rim: 0.2 });
-  const woodDark = mat(PALETTE.woodDark, { rim: 0.2 });
-  const iron = mat(PALETTE.iron);
+  const stone = mat(PALETTE.stone, { side: THREE.DoubleSide, vertexColors: true, ashlar: true });
+  const stoneDark = mat(PALETTE.stoneDark, { side: THREE.DoubleSide, vertexColors: true, ashlar: true });
+  const marble = mat(PALETTE.marble, { surface: 'marble' });
+  const wood = mat(PALETTE.wood, { rim: 0.2, surface: 'wood' });
+  const woodDark = mat(PALETTE.woodDark, { rim: 0.2, surface: 'wood' });
+  const iron = mat(PALETTE.iron, { surface: 'metal' });
 
   // --- sky & light ---
   scene.background = new THREE.Color(0xf2a36a);
@@ -67,7 +67,7 @@ export function createArena(scene: THREE.Scene) {
   );
   scene.add(sky);
 
-  scene.add(new THREE.HemisphereLight(PALETTE.shadowSky, PALETTE.bounce, 1.9));
+  scene.add(new THREE.HemisphereLight(PALETTE.shadowSky, PALETTE.bounce, 1.25));
   const sun = new THREE.DirectionalLight(PALETTE.sun, 4.2);
   sun.position.copy(SUN_DIR).multiplyScalar(70);
   sun.castShadow = true;
@@ -77,7 +77,7 @@ export function createArena(scene: THREE.Scene) {
   sun.shadow.bias = -0.0004;
   scene.add(sun, sun.target);
   // glow off the sunlit stands, opposite the sun: models the shaded sand side softly (no shadows, not blocked by the bowl)
-  const glow = new THREE.DirectionalLight(PALETTE.glow, 0.9);
+  const glow = new THREE.DirectionalLight(PALETTE.glow, 0.6);
   glow.position.set(-SUN_DIR.x, 0.45, -SUN_DIR.z);
   scene.add(glow);
 
@@ -191,7 +191,7 @@ export function createArena(scene: THREE.Scene) {
   gate(Math.PI);
 
   // --- banners on the podium wall ---
-  const cloth = mat(PALETTE.banner), gold = mat(PALETTE.gold);
+  const cloth = mat(PALETTE.banner, { surface: 'cloth' }), gold = mat(PALETTE.gold, { surface: 'metal' });
   for (let i = 0; i < 10; i++) {
     const a = ((i + 0.5) / 10) * Math.PI * 2;
     const b = solid(new RoundedBoxGeometry(1.3, 2.2, 0.06, 3, 0.025), cloth);
@@ -218,7 +218,7 @@ export function createArena(scene: THREE.Scene) {
     arm.rotation.z = Math.PI / 2;
     arm.position.y = 1.45;
     const headGeo = new THREE.SphereGeometry(0.22, 24, 16);
-    const head = solid(headGeo, mat(PALETTE.straw, { rim: 0.2 })); // straw-stuffed sack
+    const head = solid(headGeo, mat(PALETTE.straw, { rim: 0.2, surface: 'cloth' })); // straw-stuffed sack
     head.position.y = 2.15;
     const shield = solid(new THREE.CylinderGeometry(0.42, 0.42, 0.07, 40), woodDark);
     shield.rotation.x = Math.PI / 2;
@@ -345,8 +345,8 @@ export function createArena(scene: THREE.Scene) {
     }
   }
 
-  /** Sword strike from `origin` toward unit `dir` (xz). Returns number of things hit. */
-  function strike(origin: THREE.Vector3, dir: THREE.Vector3, reach = 1.7): number {
+  /** Strike from `origin` toward unit `dir` (xz); `power` scales the shove. Returns number of things hit. */
+  function strike(origin: THREE.Vector3, dir: THREE.Vector3, reach = 1.7, power = 1): number {
     let hits = 0;
     const test = (x: number, z: number, r: number) => {
       const dx = x - origin.x, dz = z - origin.z, d = Math.hypot(dx, dz);
@@ -354,20 +354,27 @@ export function createArena(scene: THREE.Scene) {
     };
     for (const b of bodies) {
       if (!test(b.mesh.position.x, b.mesh.position.z, b.r)) continue;
-      b.vx += dir.x * 7;
-      b.vz += dir.z * 7;
+      b.vx += dir.x * 7 * power;
+      b.vz += dir.z * 7 * power;
       hits++;
     }
     for (const p of pali) {
       if (!test(p.x, p.z, p.r)) continue;
-      p.wx += dir.x * 4.5;
-      p.wz += dir.z * 4.5;
+      p.wx += dir.x * 4.5 * power;
+      p.wz += dir.z * 4.5 * power;
       hits++;
     }
     return hits;
   }
 
-  return { update, strike };
+  /** Distance from a point to the nearest enemy. Placeholder: the training posts stand in for enemies. */
+  function enemyDistance(pos: THREE.Vector3): number {
+    let best = Infinity;
+    for (const p of pali) best = Math.min(best, Math.hypot(p.x - pos.x, p.z - pos.z) - p.r);
+    return best;
+  }
+
+  return { update, strike, enemyDistance };
 }
 
 /** Sand surface height: low dunes, scuffed hollows, drift piled against the wall. */
@@ -425,7 +432,7 @@ function createSand(): THREE.Mesh {
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
   const colors = new Float32Array(pos.count * 3);
-  const crest = new THREE.Color(0xf3d49a), hollow = new THREE.Color(0xdfae6c), c = new THREE.Color();
+  const crest = new THREE.Color(PALETTE.sandCrest), hollow = new THREE.Color(PALETTE.sandHollow), c = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i);
     const h = sandHeight(x, z);
@@ -438,7 +445,7 @@ function createSand(): THREE.Mesh {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
 
-  const sandMat = mat(0xffffff, { vertexColors: true, map: ripples });
+  const sandMat = mat(0xffffff, { vertexColors: true, map: ripples, surface: 'sand' });
   const sand = new THREE.Mesh(geo, sandMat);
   sand.receiveShadow = true;
   return sand;

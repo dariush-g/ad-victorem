@@ -15,13 +15,66 @@
       #rank .sub { font-size: 13px; opacity: 0.9; }
       #hint { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center; font-size: 14px;
         transition: opacity 0.4s; }
-      #hint b { color: #f0c050; }
+      #hint b, .prompt b { color: #f0c050; }
+      .prompt, .toast { position: absolute; left: 0; right: 0; text-align: center; opacity: 0; transition: opacity 0.2s; }
+      .prompt { bottom: 76px; font-size: 17px; }
+      .toast { top: 22%; font-size: 15px; }
+      .prompt.show, .toast.show { opacity: 1; }
+      .inv { position: absolute; right: 6%; top: 50%; transform: translateY(-50%); pointer-events: auto; padding: 18px 22px 14px;
+        background: rgba(38, 24, 18, 0.88); border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); text-shadow: none; }
+      .inv[hidden] { display: none; }
+      .inv-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid #6e5334; }
+      .inv-tab { padding: 6px 14px 5px; font-size: 16px; font-weight: bold; color: #b9a27a; cursor: pointer;
+        border: 1px solid transparent; border-bottom: none; border-radius: 5px 5px 0 0; }
+      .inv-tab:hover { color: #fff7e6; }
+      .inv-tab.on { color: #f0c050; border-color: #6e5334; background: rgba(240, 192, 80, 0.12); }
+      .sheet { width: 420px; }
+      .sheet-figure { position: relative; border: 1px solid #6e5334; border-radius: 4px; overflow: hidden;
+        background: radial-gradient(ellipse at 50% 45%, #6a4631 0%, #3a2419 62%, #22150f 100%); }
+      .sheet-figure svg, .sheet-figure canvas { position: absolute; left: 0; width: 100%; }
+      .sheet-figure svg { top: 0; height: 100%; }
+      .sheet-figure canvas { top: 12px; aspect-ratio: 1; }
+      .stat { position: absolute; width: 132px; }
+      .stat.tl, .stat.bl { left: 10px; }
+      .stat.tr, .stat.br { right: 10px; text-align: right; }
+      .stat.tl, .stat.tr { top: 9px; }
+      .stat.bl, .stat.br { bottom: 9px; }
+      .stat-name { font: bold 14px Georgia, 'Times New Roman', serif; letter-spacing: 1.5px; color: #f0c050; text-shadow: 0 1px 2px #000; }
+      .stat-pips { display: flex; gap: 2px; margin: 4px 0; }
+      .stat.tr .stat-pips, .stat.br .stat-pips { justify-content: flex-end; }
+      .stat-pips i { width: 7px; height: 9px; background: rgba(0, 0, 0, 0.45); border: 1px solid #8a6a3a; box-sizing: border-box; }
+      .stat-pips i.on { background: #f0c050; border-color: #f0c050; }
+      .stat-note { font: 12px Georgia, 'Times New Roman', serif; letter-spacing: 0.4px; text-transform: none; color: #fff7e6; text-shadow: 0 1px 2px #000; }
+      .sheet-live { margin-top: 10px; font: 12px Georgia, serif; letter-spacing: 1px; text-align: center; }
+      .vitals { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
+      .bar { position: relative; width: 230px; height: 15px; background: rgba(26, 18, 16, 0.7); border: 1px solid #1a1210;
+        border-radius: 3px; overflow: hidden; box-shadow: 0 0 0 1px rgba(240, 192, 80, 0.35); }
+      .bar i { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.12s linear; }
+      .bar span { position: absolute; inset: 0; text-align: center; font: bold 10px/15px Georgia, serif; letter-spacing: 1px; }
+      .bar.hp i { background: linear-gradient(#d8483c, #96231f); }
+      .bar.sp { height: 11px; width: 200px; }
+      .bar.sp span { display: none; }
+      .bar.sp i { background: linear-gradient(#e9c152, #b0861f); }
+      .bar.sp.winded i { background: linear-gradient(#9a8a66, #6b5f45); }
+      .inv-body { display: flex; gap: 22px; }
+      .inv-equip { display: grid; grid-template-columns: repeat(2, 64px); gap: 6px 8px; align-content: start; }
+      .inv-slot { display: flex; flex-direction: column; align-items: center; gap: 3px; font: 10px Georgia, serif; letter-spacing: 0.5px; }
+      .inv-bag { display: grid; grid-template-columns: repeat(4, 56px); gap: 8px; align-content: start; }
+      .inv-cell { position: relative; width: 56px; height: 56px; box-sizing: border-box; padding: 7px; background: rgba(0, 0, 0, 0.32);
+        border: 1px solid #6e5334; border-radius: 4px; }
+      .inv-cell.filled { cursor: pointer; background: rgba(240, 192, 80, 0.1); }
+      .inv-cell.filled:hover { border-color: #f0c050; background: rgba(240, 192, 80, 0.2); }
+      .inv-equip .inv-cell { border-color: #b98a45; }
+      .inv-count { position: absolute; right: 4px; bottom: 2px; font: bold 12px Georgia, serif; letter-spacing: 0; }
+      .inv-info { width: 414px; min-height: 48px; margin-top: 12px; font: 13px/1.35 Georgia, serif; text-transform: none; letter-spacing: 0.3px; }
+      .inv-info b { color: #f0c050; }
+      .inv-help { margin-top: 6px; font-size: 10px; opacity: 0.6; }
     </style>
   </head>
   <body>
     <div id="hud">
-      <div id="rank"><div class="title">Servus</div><div class="sub">Slave · Wooden rudis</div></div>
-      <div id="hint"><b>Click</b> to take control · <b>WASD</b> move · <b>Shift</b> run · <b>Space</b> jump · <b>Left click</b> swing · <b>G</b> go limp</div>
+      <div id="rank"><div class="title">Servus</div><div class="sub">Slave · Wooden sword</div></div>
+      <div id="hint"><b>Click</b> to take control · <b>WASD</b> move · <b>Shift</b> run · <b>Space</b> jump · <b>Left click</b> swing · <b>E</b> take · <b>Tab</b> inventory · <b>C</b> character · <b>G</b> go limp</div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

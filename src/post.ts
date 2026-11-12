@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js';
 
-export const BASE_CHROMA = 0.003;
+export const BASE_CHROMA = 0; // no resting colour fringe: edges stay clean; hits still pulse it
 
 /**
  * Whole post chain in one full-screen pass: radial RGB split (zero at screen centre),
- * vignette, filmic tone curve, a little extra saturation, and conversion to the display colour space.
+ * vignette, filmic tone curve, fine film grain, and conversion to the display colour space.
  */
 export function createPost(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
   const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
@@ -14,7 +14,9 @@ export function createPost(renderer: THREE.WebGLRenderer, scene: THREE.Scene, ca
       tDiffuse: { value: target.texture },
       amount: { value: BASE_CHROMA },
       vignette: { value: 0.3 },
-      saturation: { value: 1.1 },
+      saturation: { value: 1.12 },
+      grain: { value: 0 },
+      time: { value: 0 },
     },
     depthTest: false,
     depthWrite: false,
@@ -29,6 +31,8 @@ export function createPost(renderer: THREE.WebGLRenderer, scene: THREE.Scene, ca
       uniform float amount;
       uniform float vignette;
       uniform float saturation;
+      uniform float grain;
+      uniform float time;
       varying vec2 vUv;
       void main() {
         vec2 d = vUv - 0.5;
@@ -40,6 +44,9 @@ export function createPost(renderer: THREE.WebGLRenderer, scene: THREE.Scene, ca
         c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14); // filmic curve: soft highlights, deeper shade
         c = mix(vec3(dot(c, vec3(0.2126, 0.7152, 0.0722))), c, saturation);
         c *= 1.0 - vignette * smoothstep(0.25, 0.85, length(d));
+        // luminance grain, strongest in the midtones, re-seeded every frame
+        float n = fract(sin(dot(gl_FragCoord.xy + time * 61.7, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+        c += n * grain * (1.0 - abs(dot(c, vec3(0.333)) * 2.0 - 1.0) * 0.6);
         gl_FragColor = vec4(max(c, 0.0), 1.0);
         #include <colorspace_fragment>
       }`,
@@ -48,6 +55,7 @@ export function createPost(renderer: THREE.WebGLRenderer, scene: THREE.Scene, ca
 
   return {
     render() {
+      material.uniforms.time.value = (material.uniforms.time.value + 1) % 1000;
       renderer.setRenderTarget(target);
       renderer.render(scene, camera);
       renderer.setRenderTarget(null);
