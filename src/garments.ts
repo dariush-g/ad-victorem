@@ -64,6 +64,8 @@ export function boneBox(body: Body, bones: string[], yMin = -Infinity, yMax = In
 }
 
 const TORSO = ['spine_01', 'spine_02', 'spine_03', 'clavicle_l', 'clavicle_r', 'pelvis'];
+const NECK_HALF = 0.072; // half-width of a tunic's neck opening (the neck itself is ~0.07)
+const SHOULDER_RISE = 0.05; // how far the tops of the shoulders climb above the base of the neck
 
 /**
  * A second skin: the body faces whose corners are all marked in `keep`, pushed out along
@@ -131,7 +133,11 @@ export function buildTunicTop(body: Body, material: THREE.Material, cutY: number
   for (let i = 0; i < n; i++) {
     const b = body.bone[i];
     v.fromArray(body.pos, i * 3);
-    if (TORSO.includes(b)) keep[i] = v.y >= cutY && v.y <= neckY + 0.012 ? 1 : 0;
+    // neckline: an opening only as wide as the neck; further out the cloth follows the shoulders up
+    // their slope (which rises above the neck's base and is partly moved by the neck bone)
+    const onShoulder = Math.abs(v.x) >= NECK_HALF && v.y <= neckY + SHOULDER_RISE;
+    if (TORSO.includes(b)) keep[i] = v.y >= cutY && (v.y <= neckY + 0.012 || onShoulder) ? 1 : 0;
+    else if (b === 'neck_01') keep[i] = onShoulder ? 1 : 0;
     else if (b === 'upperarm_l' || b === 'upperarm_r') {
       const s = b.endsWith('_l') ? 0 : 1, along = elbows[s].clone().sub(shoulders[s]).normalize();
       keep[i] = v.sub(shoulders[s]).dot(along) < sleeve ? 1 : 0;

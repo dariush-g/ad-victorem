@@ -4,7 +4,7 @@ import { createPost, BASE_CHROMA } from './post';
 import { loadGladiator } from './gladiator';
 import { ITEMS, SLOTS } from './items';
 import { Inventory, createInventoryUI } from './inventory';
-import { findOpponent, type Link, type Msg, type Search } from './net';
+import { findOpponent, makeCode, cleanCode, cleanName, type Link, type Mode, type Msg, type Search } from './net';
 import { BASE_DAMAGE, ZONES, ZONE_LIST, protection, touchedPart } from './hits';
 import { Vitals } from './stats';
 import { createVitalBars, createCharacterSheet } from './character';
@@ -13,6 +13,8 @@ import { createPortrait } from './portrait';
 const SENS = 0.0022;
 // over-the-right-shoulder rig, in camera space relative to the character's upper chest
 const SHOULDER = { right: 1.0, up: 1.62, back: 3.3 };
+// resting camera tilt: the middle of the view (where swings are aimed) sits at chest height at sword's reach
+const REST_PITCH = -0.25;
 
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 // start sharp, then drop resolution in steps if the machine can't hold frame rate
@@ -94,32 +96,74 @@ for (const id of ['gladius', 'balteus', 'subligaculum_red', 'tunica', 'tunica_ru
 
 // --- the duel: find an opponent from the room, gates rise, fight, back to the room ---
 type Phase = 'lobby' | 'searching' | 'countdown' | 'fight' | 'over' | 'practice';
-const COUNTDOWN = 4, AFTERMATH = 6, SEND_HZ = 30, SILENCE_MS = 6000;
+const COUNTDOWN = 4, SEND_HZ = 30, SILENCE_MS = 6000;
+const REMATCH_WINDOW = 20; // seconds after a match in which both must agree to fight again
 const GATE_CLEAR = 3; // metres onto the sand before a gate drops behind its fighter
 const ATTACK_KINDS = ['stand', 'walk', 'run'] as const;
 let phase: Phase = 'lobby', phaseT = 0, bannerT = 0;
 let search: Search | null = null, link: Link | null = null;
+let searchMode: Mode = { kind: 'queue' };
+/** After a match: who has asked to fight again, and why a rematch is off the table (null while it is still possible). */
+const rematch = { mine: false, theirs: false, closed: null as string | null };
 let sendT = 0, foeGateShut = false;
 /** Last word from the other side. */
 const remote = {
   p: new THREE.Vector3(), v: new THREE.Vector3(), f: 0, a: 0, mx: 0, mz: 0, bits: 0, hp: 1,
   at: 0, // when it arrived, ms
   dead: false,
-  attack: null as { k: (typeof ATTACK_KINDS)[number]; f: number } | null,
+  attack: null as { k: (typeof ATTACK_KINDS)[number]; f: number; aim: number } | null,
   jump: false,
 };
 const matchEl = document.getElementById('match')!;
-const foeBar = document.getElementById('foe')!, foeFill = foeBar.querySelector('i')!;
+const foeBar = document.getElementById('foe')!, foeFill = foeBar.querySelector('i')!, foeTitle = foeBar.querySelector('.foe-title')!;
+/** The opponent's name, floating above their head while they are in the arena with us. */
+const foeLabel = document.getElementById('foe-name')!;
+function setFoeName(name: string) {
+  foeLabel.textContent = foeTitle.textContent = name || 'Opponent';
+}
+const labelAt = new THREE.Vector3();
+function updateFoeLabel() {
+  const show = foe.root.visible && link !== null && (phase === 'countdown' || phase === 'fight' || phase === 'over');
+  if (show) {
+    foe.headPosition(labelAt).y += 0.32;
+    camera.updateMatrixWorld();
+    labelAt.project(camera);
+    const onScreen = labelAt.z < 1 && Math.abs(labelAt.x) < 1.1 && Math.abs(labelAt.y) < 1.1;
+    if (onScreen) {
+      const x = ((labelAt.x + 1) / 2) * window.innerWidth, y = ((1 - labelAt.y) / 2) * window.innerHeight;
+      foeLabel.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, -100%)`;
+    }
+    foeLabel.hidden = !onScreen;
+  } else foeLabel.hidden = true;
+}
 const banner = (html: string) => {
   if (matchEl.innerHTML !== html) matchEl.innerHTML = html;
 };
 const num = (x: unknown, lo = -1e4, hi = 1e4) => (typeof x === 'number' && Number.isFinite(x) ? THREE.MathUtils.clamp(x, lo, hi) : 0);
 
+/** Start looking for an opponent from the room: the open queue, or a friend by code. */
+function startSearch(mode: Mode) {
+  if (phase !== 'lobby' || !requireName()) return;
+  phase = 'searching';
+  searchMode = mode;
+  search = findOpponent(mode, {
+    found: onFound,
+    message: onMessage,
+    lost: onLost,
+    failed(why) {
+      search = null;
+      phase = 'lobby';
+      if (why === 'taken' && mode.kind === 'host') return startSearch({ kind: 'host', code: makeCode() }); // unlucky: someone has that code
+      ui.toast(why === 'missing' && mode.kind === 'join' ? `Nobody is waiting with code ${mode.code}` : 'Could not connect');
+      if (!menu.hidden) setMenu(true);
+    },
+  });
+  if (!menu.hidden) setMenu(true);
+}
+
 function toggleSearch() {
-  if (phase === 'lobby') {
-    phase = 'searching';
-    search = findOpponent({ found: onFound, message: onMessage, lost: onLost });
-  } else if (phase === 'searching') {
+  if (phase === 'lobby') startSearch({ kind: 'queue' });
+  else if (phase === 'searching') {
     search?.close();
     search = null;
     phase = 'lobby';
@@ -128,20 +172,30 @@ function toggleSearch() {
 
 function onFound(l: Link) {
   link = l;
+  site.side = l.host ? 1 : -1; // the host fights from the north gate, the guest from the south
+  for (const slot of SLOTS) foe.equip(slot, null);
+  setFoeName('');
+  l.send({ t: 'gear', gear: { ...inventory.equipped }, name: playerName() });
+  beginMatch();
+}
+
+/** Both fighters to their gateway rooms, healed, gear fixed, gates shut, countdown running. Used for the first bout and every rematch. */
+function beginMatch() {
   phase = 'countdown';
-  if (!menu.hidden) setMenu(true);
   phaseT = COUNTDOWN;
+  resultEl.hidden = true;
   inventory.locked = true;
   ui.setOpen(false);
-  if (!l.host) {
-    // the guest fights from the south gate: same room, half a turn round the arena
-    site.side = -1;
-    player.place(new THREE.Vector3(-player.pos.x, player.pos.y, -player.pos.z), player.facing + Math.PI);
-    yaw += Math.PI;
-    focus.set(-focus.x, focus.y, -focus.z);
-  }
+  if (!menu.hidden) setMenu(true);
+  vitals.restore();
+  arena.setGate(1, false);
+  arena.setGate(-1, false);
   site.zone = 'room';
-  const there = spawnPoint(site.side === 1 ? -1 : 1);
+  const here = spawnPoint(site.side), there = spawnPoint(site.side === 1 ? -1 : 1);
+  player.place(here.pos, here.facing);
+  focus.copy(here.pos);
+  yaw = site.side === 1 ? 0 : Math.PI; // camera behind the player, looking at the gate
+  pitch = REST_PITCH;
   foe.place(there.pos, there.facing);
   remote.p.copy(there.pos);
   remote.v.set(0, 0, 0);
@@ -153,9 +207,7 @@ function onFound(l: Link) {
   remote.attack = null;
   remote.jump = false;
   foeGateShut = false;
-  for (const slot of SLOTS) foe.equip(slot, null);
   foe.root.visible = true;
-  l.send({ t: 'gear', gear: { ...inventory.equipped } });
 }
 
 /** Everything here comes from another player's machine: check it before using it. */
@@ -163,6 +215,7 @@ function onMessage(m: Msg) {
   if (!link) return;
   switch (m.t) {
     case 'gear':
+      setFoeName(cleanName(m.name));
       for (const slot of SLOTS) {
         const id = m.gear?.[slot];
         foe.equip(slot, typeof id === 'string' && Object.hasOwn(ITEMS, id) && ITEMS[id].slot === slot ? id : null);
@@ -181,7 +234,7 @@ function onMessage(m: Msg) {
       remote.at = performance.now();
       break;
     case 'atk':
-      if (ATTACK_KINDS.includes(m.k)) remote.attack = { k: m.k, f: num(m.f) };
+      if (ATTACK_KINDS.includes(m.k)) remote.attack = { k: m.k, f: num(m.f), aim: num(m.aim, -1, 1) };
       break;
     case 'jump':
       remote.jump = true;
@@ -205,15 +258,39 @@ function onMessage(m: Msg) {
       if (phase === 'fight') {
         remote.hp = 0;
         remote.dead = true;
-        finish('<b>Victory</b>');
+        finish('Victory');
       }
+      break;
+    case 'rematch':
+      if (phase !== 'over' || rematch.closed) break;
+      rematch.theirs = true;
+      if (rematch.mine) beginMatch();
+      break;
+    case 'leave':
+      opponentGone();
       break;
   }
 }
 
 function onLost() {
-  if (phase === 'countdown' || phase === 'fight') finish('<b>Victory</b> · your opponent fled');
-  else if (phase === 'over') link = null;
+  if (phase === 'countdown' || phase === 'fight') {
+    link = search = null;
+    finish('Victory', 'Your opponent fled');
+  } else opponentGone();
+}
+
+/** The other player has left: no rematch, and nothing to wait for. */
+function opponentGone() {
+  search?.close();
+  search = link = null;
+  if (phase === 'over' && !rematch.closed) rematch.closed = rematch.mine ? 'Your opponent did not take the rematch' : 'Your opponent has left';
+}
+
+/** Leave the opponent politely: tell them, then hang up once the message is out. */
+function hangUp() {
+  link?.send({ t: 'leave' });
+  search?.close(300);
+  search = link = null;
 }
 
 /** Out of health, from a blow or from bleeding. */
@@ -221,13 +298,51 @@ function die() {
   if (phase !== 'fight') return;
   player.collapse();
   link?.send({ t: 'dead' });
-  finish('<b>Defeat</b>');
+  finish('Defeat');
 }
 
-function finish(html: string) {
+/** The bout is decided: show the result with rematch / new opponent / room, and free the mouse to click them. */
+function finish(title: string, note = '') {
   phase = 'over';
-  phaseT = AFTERMATH;
-  banner(html);
+  phaseT = REMATCH_WINDOW;
+  rematch.mine = rematch.theirs = false;
+  rematch.closed = link ? null : 'Your opponent has left';
+  resultTitle.textContent = title;
+  resultEl.dataset.note = note;
+  resultEl.hidden = false;
+  banner('');
+  if (!menu.hidden) setMenu(false);
+  document.exitPointerLock();
+}
+
+const resultEl = document.getElementById('result')!;
+const resultTitle = resultEl.querySelector('.result-title')!, resultNote = resultEl.querySelector('.result-note')!;
+const resultBtn = (act: string) => resultEl.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
+resultEl.addEventListener('click', (e) => {
+  const act = (e.target as HTMLElement).closest('button')?.dataset.act;
+  if (!act || phase !== 'over') return;
+  if (act === 'rematch') {
+    if (rematch.closed || rematch.mine) return;
+    rematch.mine = true;
+    link?.send({ t: 'rematch' });
+    if (rematch.theirs) beginMatch();
+    lock();
+    return;
+  }
+  hangUp();
+  toLobby();
+  if (act === 'again') startSearch({ kind: 'queue' });
+  lock();
+});
+/** Keep the result panel's buttons and note in step with the rematch state. */
+function renderResult() {
+  const secs = Math.max(0, Math.ceil(phaseT));
+  const btn = resultBtn('rematch');
+  btn.disabled = !!rematch.closed || rematch.mine;
+  const label = rematch.closed ? 'Rematch' : rematch.mine ? `Waiting for your opponent… ${secs}` : `Rematch · ${secs}`;
+  if (btn.textContent !== label) btn.textContent = label;
+  const note = rematch.closed ?? (rematch.theirs ? 'Your opponent wants a rematch' : resultEl.dataset.note ?? '');
+  if (resultNote.textContent !== note) resultNote.textContent = note;
 }
 
 /** Alone on the sand with the training posts. Gear can still be changed; P goes back to the room. */
@@ -243,7 +358,7 @@ function togglePractice() {
   player.place(drop, Math.PI); // facing the posts in the middle
   focus.copy(drop);
   yaw = 0;
-  pitch = -0.12;
+  pitch = REST_PITCH;
 }
 
 /** Back to the north room, healed, gates shut, free to change gear and search again. */
@@ -251,6 +366,7 @@ function toLobby() {
   search?.close();
   search = link = null;
   phase = 'lobby';
+  resultEl.hidden = true;
   arena.setPractice(false);
   if (!menu.hidden) setMenu(true);
   arena.setGate(1, false);
@@ -261,7 +377,7 @@ function toLobby() {
   player.place(home.pos, home.facing);
   focus.copy(home.pos);
   yaw = 0;
-  pitch = -0.12;
+  pitch = REST_PITCH;
   vitals.restore();
   inventory.locked = false;
   foe.root.visible = false;
@@ -271,7 +387,14 @@ function updateMatch(dt: number) {
   const now = performance.now();
   if (phase === 'lobby') banner('<b>F</b> Find an opponent · <b>P</b> Practice');
   else if (phase === 'practice') banner('Practice · <b>P</b> back to the room');
-  else if (phase === 'searching') banner('Searching for an opponent… · <b>F</b> cancel');
+  else if (phase === 'searching')
+    banner(
+      searchMode.kind === 'host'
+        ? `Your code: <b>${searchMode.code}</b> · give it to your friend · <b>F</b> cancel`
+        : searchMode.kind === 'join'
+          ? `Joining <b>${searchMode.code}</b>… · <b>F</b> cancel`
+          : 'Searching for an opponent… · <b>F</b> cancel',
+    );
   else if (phase === 'countdown') {
     phaseT -= dt;
     banner(`Opponent found · the gate opens in <b>${Math.max(1, Math.ceil(phaseT))}</b>`);
@@ -297,7 +420,14 @@ function updateMatch(dt: number) {
       search?.close();
       onLost();
     }
-  } else if (phase === 'over' && (phaseT -= dt) <= 0) toLobby();
+  } else if (phase === 'over') {
+    // the rematch offer lapses: nobody is left waiting on a player who won't answer
+    if (!rematch.closed && (phaseT -= dt) <= 0) {
+      rematch.closed = rematch.mine ? 'Your opponent did not take the rematch' : 'The rematch offer has lapsed';
+      hangUp();
+    }
+    renderResult();
+  }
   const fighting = phase === 'fight' || phase === 'over';
   foeBar.hidden = !fighting;
   if (fighting) foeFill.style.width = `${remote.hp * 100}%`;
@@ -305,7 +435,7 @@ function updateMatch(dt: number) {
 
 /** Tell the opponent where we are. `still` = report standing at rest (the tab is in the background and nothing is moving). */
 function sendState(move: { x: number; z: number }, sprint: boolean, backpedal: boolean, still = false) {
-  if (!link || phase === 'lobby' || phase === 'searching') return;
+  if (!link || phase === 'lobby' || phase === 'searching' || phase === 'practice') return;
   const p = player.pos, v = still ? ZERO : player.vel;
   link.send({
     t: 's', p: [p.x, p.y, p.z], v: [v.x, v.y, v.z], f: player.facing, a: yaw + Math.PI, m: [move.x, move.z],
@@ -346,11 +476,11 @@ function updateFoe(dt: number, move: { x: number; z: number }, sprint: boolean, 
     foe.pos.z += dz * k;
   }
   foe.stayDown = limp;
-  if (remote.attack) foe.forceAttack(remote.attack.k, remote.attack.f);
+  if (remote.attack) foe.forceAttack(remote.attack.k, remote.attack.f, remote.attack.aim);
   remote.attack = null;
   foe.update(dt, {
     moveX: remote.mx, moveZ: remote.mz, sprint: (remote.bits & 1) !== 0, backpedal: (remote.bits & 2) !== 0,
-    jump: remote.jump, attack: false, ragdoll: limp !== foe.ragdolled, aimYaw: remote.a,
+    jump: remote.jump, attack: false, ragdoll: limp !== foe.ragdolled, aimYaw: remote.a, aim: 0,
     threat: foe.pos.distanceTo(player.pos),
   });
   remote.jump = false;
@@ -415,12 +545,47 @@ resize();
 
 // --- input ---
 const keys = new Set<string>();
-let locked = false, yaw = 0, pitch = -0.12, attackQueued = false;
+let locked = false, yaw = 0, pitch = REST_PITCH, attackQueued = false;
 const canvas = renderer.domElement;
 // Pause menu: shown whenever the mouse is free and the inventory isn't, so Esc (which the browser
 // spends on releasing pointer lock) brings it up. The site opens straight onto the game: click to take control.
 const menu = document.getElementById('menu')!;
 const menuBtn = (act: string) => menu.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
+const joinRow = menu.querySelector<HTMLElement>('[data-show="join"]')!, joinInput = document.getElementById('join-code') as HTMLInputElement;
+const nameInput = document.getElementById('player-name') as HTMLInputElement;
+const NAME_KEY = 'ad-victorem-name';
+try {
+  nameInput.value = cleanName(localStorage.getItem(NAME_KEY));
+} catch {}
+const playerName = () => cleanName(nameInput.value);
+nameInput.addEventListener('input', () => {
+  nameInput.classList.remove('missing');
+  try {
+    localStorage.setItem(NAME_KEY, playerName());
+  } catch {}
+});
+/** Fighting someone needs a name: if there isn't one yet, open the menu on the name box and say so. */
+function requireName(): boolean {
+  if (playerName()) return true;
+  ui.toast('Name your gladiator first');
+  nameInput.classList.add('missing');
+  if (document.pointerLockElement) document.exitPointerLock();
+  setMenu(true);
+  nameInput.focus();
+  return false;
+}
+/** Join a friend's match with the code typed into the menu. Returns false (menu stays open) if it isn't a valid code. */
+function joinByCode(): boolean {
+  const code = cleanCode(joinInput.value);
+  if (!code) {
+    ui.toast('Codes are 5 letters and numbers');
+    joinInput.focus();
+    return false;
+  }
+  joinInput.value = '';
+  startSearch({ kind: 'join', code });
+  return true;
+}
 function setMenu(open: boolean) {
   menu.hidden = !open;
   if (!open) return;
@@ -429,6 +594,8 @@ function setMenu(open: boolean) {
   menuBtn('search').hidden = !(phase === 'lobby' || phase === 'searching');
   menuBtn('search').textContent = phase === 'searching' ? 'Cancel search' : 'Find opponent';
   menuBtn('practice').hidden = !idle || phase === 'searching';
+  menuBtn('host').hidden = phase !== 'lobby';
+  joinRow.hidden = phase !== 'lobby';
   menuBtn('practice').textContent = phase === 'practice' ? 'Back to the room' : 'Practice';
 }
 const lock = () =>
@@ -438,7 +605,10 @@ const lock = () =>
 menu.addEventListener('click', (e) => {
   const act = (e.target as HTMLElement).closest('button')?.dataset.act;
   if (!act) return;
+  if ((act === 'search' || act === 'host' || act === 'join') && phase === 'lobby' && !requireName()) return;
+  if (act === 'join' && !joinByCode()) return;
   if (act === 'search') toggleSearch();
+  if (act === 'host') startSearch({ kind: 'host', code: makeCode() });
   if (act === 'practice') togglePractice();
   setMenu(false);
   lock();
@@ -456,7 +626,7 @@ canvas.addEventListener('click', () => {
 });
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === canvas;
-  setMenu(!locked && !ui.open);
+  setMenu(!locked && !ui.open && phase !== 'over'); // after a bout the result panel takes the mouse instead
   if (!locked) keys.clear();
 });
 document.addEventListener('mousemove', (e) => {
@@ -468,6 +638,18 @@ document.addEventListener('mousedown', (e) => {
   if (locked && e.button === 0) attackQueued = true;
 });
 document.addEventListener('keydown', (e) => {
+  // typing a friend's code: keys are text, not controls (Enter joins)
+  if (e.target === nameInput) {
+    if (e.code === 'Enter') nameInput.blur();
+    if (e.code !== 'Escape') return;
+  }
+  if (e.target === joinInput) {
+    if (e.code === 'Enter' && joinByCode()) {
+      setMenu(false);
+      lock();
+    }
+    if (e.code !== 'Escape') return;
+  }
   if (e.code === 'Escape' && !ui.open) {
     // only reaches us while the mouse is already free: toggle the menu
     if (!e.repeat) {
@@ -504,6 +686,25 @@ document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
 });
 document.addEventListener('keyup', (e) => keys.delete(e.code));
+
+// --- aiming: the swing goes where the middle of the screen looks ---
+const AIM_REACH = 1.3; // metres in front of the fighter where the view is read (about sword's reach)
+const AIM_MID = 1.3, AIM_SPAN = 0.4; // height (m) of a level swing, and how far above/below counts as fully high/low
+const _aimN = new THREE.Vector3(), _aimP = new THREE.Vector3(), _aimF = new THREE.Vector3();
+/**
+ * -1..1: how high the middle of the view crosses a plane at sword's reach in front of the fighter.
+ * About head height → 1, chest → 0, thighs → -1. With the middle of the view on the opponent's neck, the
+ * blade comes in at the neck.
+ */
+function aimFromView() {
+  _aimN.set(-Math.sin(yaw), 0, -Math.cos(yaw)); // camera's horizontal forward
+  camera.getWorldDirection(_aimF);
+  _aimP.copy(player.pos).addScaledVector(_aimN, AIM_REACH).sub(camera.position);
+  const along = _aimF.dot(_aimN);
+  if (along < 1e-3) return 0;
+  const h = camera.position.y + _aimF.y * (_aimP.dot(_aimN) / along) - player.pos.y;
+  return THREE.MathUtils.clamp((h - AIM_MID) / AIM_SPAN, -1, 1);
+}
 
 // --- camera rig ---
 const focus = player.pos.clone();
@@ -551,11 +752,12 @@ function update(dt: number) {
     attack: attackQueued && vitals.canAttack,
     ragdoll: false, // going limp is not a choice: only death drops you
     aimYaw: yaw + Math.PI, // camera looks down -Z at yaw 0; model faces +Z at 0
+    aim: aimFromView(),
     threat: Math.min(arena.enemyDistance(player.pos), foeNear),
   });
   if (!wasAttacking && player.attacking) {
     vitals.attacked();
-    link?.send({ t: 'atk', k: player.attackKind, f: player.facing });
+    link?.send({ t: 'atk', k: player.attackKind, f: player.facing, aim: aimFromView() });
   }
   if (wasGrounded && !player.grounded && player.vel.y > 2 && !player.ragdolled) {
     vitals.jumped();
@@ -611,6 +813,8 @@ function frame() {
   }
   update(dt); // runs unlocked too (no input) so the idle pose and physics stay alive
   updateCamera(dt);
+  updateFoeLabel();
   post.render();
 }
+if (!playerName()) setMenu(true); // first visit: ask for a name before anything else
 frame();

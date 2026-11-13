@@ -24,7 +24,33 @@
       .menu-actions button { font: bold 15px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer;
         padding: 11px; background: rgba(240, 192, 80, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
       .menu-actions button:hover { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
-      .menu-actions button[hidden] { display: none; }
+      .menu-actions button[hidden], .menu-join[hidden] { display: none; }
+      .menu-join { display: flex; gap: 8px; }
+      .menu-join input { flex: 1; min-width: 0; font: bold 15px Georgia, serif; letter-spacing: 4px; text-transform: uppercase; text-align: center;
+        color: #fff7e6; background: rgba(0, 0, 0, 0.35); border: 1px solid #6e5334; border-radius: 4px; padding: 10px; }
+      .menu-join input:focus { outline: none; border-color: #f0c050; }
+      .menu-join input::placeholder { letter-spacing: 1px; color: rgba(255, 247, 230, 0.45); text-transform: none; }
+      .menu-join button { flex: 0 0 auto; padding: 11px 18px; }
+      .menu-name { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font: 12px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #f0c050; }
+      .menu-name input { font: bold 16px Georgia, serif; letter-spacing: 2px; text-align: center; color: #fff7e6; background: rgba(0, 0, 0, 0.35);
+        border: 1px solid #6e5334; border-radius: 4px; padding: 10px; }
+      .menu-name input:focus { outline: none; border-color: #f0c050; }
+      .menu-name input.missing { border-color: #d8483c; }
+      .menu-name input::placeholder { letter-spacing: 1px; color: rgba(255, 247, 230, 0.45); }
+      #foe-name { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%); white-space: nowrap; font-size: 15px; font-weight: bold;
+        color: #f0c050; text-transform: none; letter-spacing: 1px; will-change: transform; }
+      #foe-name[hidden] { display: none; }
+      .result { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(380px, calc(100vw - 32px)); box-sizing: border-box;
+        padding: 22px 24px 18px; text-align: center; pointer-events: auto; background: rgba(38, 24, 18, 0.92); border: 2px solid #b98a45;
+        border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); text-shadow: none; }
+      .result[hidden] { display: none; }
+      .result-title { font-size: 30px; font-weight: bold; letter-spacing: 4px; color: #f0c050; }
+      .result-note { min-height: 18px; margin: 8px 0 16px; font: 13px Georgia, serif; letter-spacing: 0.5px; text-transform: none; }
+      .result-actions { display: flex; flex-direction: column; gap: 8px; }
+      .result-actions button { font: bold 14px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer;
+        padding: 11px; background: rgba(240, 192, 80, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
+      .result-actions button:hover:not(:disabled) { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
+      .result-actions button:disabled { cursor: default; opacity: 0.4; }
       .menu-box h2 { margin: 20px 0 8px; font-size: 13px; letter-spacing: 3px; color: #f0c050; text-transform: uppercase; }
       .menu-keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font: 13px Georgia, serif; }
       .menu-keys b { color: #f0c050; text-align: right; font-weight: bold; }
@@ -92,15 +118,33 @@
   <body>
     <div id="hud">
       <div id="rank"><div class="title">Servus</div><div class="sub">Slave · Wooden sword</div></div>
-      <div id="foe" hidden>Opponent<div class="bar hp"><i></i></div></div>
+      <div id="foe-name" hidden></div>
+      <div id="foe" hidden><span class="foe-title">Opponent</span><div class="bar hp"><i></i></div></div>
       <div id="match"></div>
+      <div id="result" class="result" hidden>
+        <div class="result-title"></div>
+        <div class="result-note"></div>
+        <div class="result-actions">
+          <button data-act="rematch">Rematch</button>
+          <button data-act="again">Find a new opponent</button>
+          <button data-act="room">Back to the room</button>
+        </div>
+      </div>
     </div>
     <div id="menu" hidden>
       <div class="menu-box">
         <h1>Ad Victorem</h1>
+        <label class="menu-name">Your name
+          <input id="player-name" maxlength="16" placeholder="Name your gladiator" autocomplete="off" spellcheck="false" />
+        </label>
         <div class="menu-actions">
           <button data-act="resume">Resume</button>
           <button data-act="search">Find opponent</button>
+          <button data-act="host">Play a friend · make a code</button>
+          <div class="menu-join" data-show="join">
+            <input id="join-code" maxlength="8" placeholder="Friend's code" autocomplete="off" spellcheck="false" />
+            <button data-act="join">Join</button>
+          </div>
           <button data-act="practice">Practice</button>
         </div>
         <h2>Controls</h2>

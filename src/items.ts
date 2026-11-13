@@ -108,9 +108,10 @@ export function buildWeapon(id: string): THREE.Group {
     part(new THREE.SphereGeometry(0.034, 24, 18), woodDark, g, 0, -0.1, 0);
     part(new RoundedBoxGeometry(0.17, 0.035, 0.055, 4, 0.014), woodDark, g, 0, 0.095, 0);
     part(new RoundedBoxGeometry(0.062, 0.62, 0.024, 4, 0.01), wood, g, 0, 0.42, 0);
-    const tip = part(new THREE.ConeGeometry(0.044, 0.1, 4), wood, g, 0, 0.78, 0);
-    tip.scale.z = 0.4;
-    tip.rotation.y = Math.PI / 4;
+    // point: a four-sided pyramid whose base is exactly the blade's cross-section (6.2 × 2.4 cm),
+    // so its faces carry straight on from the blade's flats and edges
+    const tipGeo = new THREE.ConeGeometry(1, 0.1, 4).rotateY(Math.PI / 4).scale(0.031 / Math.SQRT1_2, 1, 0.012 / Math.SQRT1_2);
+    part(tipGeo, wood, g, 0, 0.78, 0);
   }
   return g;
 }

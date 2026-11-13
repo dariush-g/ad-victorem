@@ -29,6 +29,7 @@ export interface Controls {
   backpedal: boolean; // walking backward: keep facing the aim direction instead of turning round
   ragdoll: boolean; // toggle: go limp / get up
   aimYaw: number; // facing angle to snap to when attacking
+  aim: number; // how high to swing: -1 low (legs) .. 0 chest .. 1 high (head, neck); fixed when the swing starts
   threat: number; // distance to the nearest enemy, metres (Infinity if none)
 }
 
@@ -114,6 +115,7 @@ export class Gladiator {
   private attackT = -1; // seconds into the attack; <0 = not attacking
   private attack: Attack = ATTACKS.stand;
   private attackV0 = 0; // ground speed when the attack began
+  private attackAim = 0; // -1..1, how high this swing was aimed
   private prevStance = [0, 0];
   private phase = 0;
   private time = 0;
@@ -398,9 +400,10 @@ export class Gladiator {
     if (!this.rag) this.startRagdoll();
   }
   /** Start a given swing now, whatever the controls say. Used to replay a remote fighter's attack. */
-  forceAttack(kind: AttackKind, facing: number) {
+  forceAttack(kind: AttackKind, facing: number, aim = 0) {
     if (this.rag) return;
     this.attack = this.moves[kind];
+    this.attackAim = clamp(aim, -1, 1);
     this.attackT = 0;
     this.swing++;
     this.attackV0 = Math.hypot(this.vel.x, this.vel.z);
@@ -446,6 +449,11 @@ export class Gladiator {
     this.armR.hand.getWorldPosition(a);
     this.weaponMount.localToWorld(b.set(0, 0.03, 0)); // knuckles, just past the grip point in the palm
     return 0.055;
+  }
+
+  /** Middle of the skull in world space, as currently drawn. */
+  headPosition(out = new THREE.Vector3()) {
+    return this.headCenter.getWorldPosition(out);
   }
 
   /** The body as capsules, one or more per hit zone, in world space (posed as currently drawn). */
@@ -520,6 +528,7 @@ export class Gladiator {
       this.attackT = 0;
       this.swing++;
       this.attackV0 = speed;
+      this.attackAim = clamp(c.aim, -1, 1);
       // a running lunge carries on along your path; the others turn to where you're aiming
       this.facing = this.attack === this.moves.run ? Math.atan2(this.vel.x, this.vel.z) : c.aimYaw;
     }
@@ -681,6 +690,12 @@ export class Gladiator {
     };
     if (atk) {
       const a = samplePose(atk, at);
+      // aim: the whole swing tilts up or down at the shoulder; a low swing also bends at the waist and
+      // knees to get under the guard, a high one comes more upright
+      const aim = this.attackAim;
+      a.rS -= aim * AIM_ARM;
+      a.lean -= aim * AIM_LEAN;
+      a.drop += Math.max(0, -aim) * AIM_CROUCH;
       for (const ch of CHANNELS) pose[ch] = lerp(pose[ch], a[ch], w);
     }
     // ease every channel so pose changes flow instead of snapping (attacks stay crisp)
@@ -973,14 +988,14 @@ const ATTACKS: Record<AttackKind, Attack> = {
       [1, {}],
     ],
   },
-  // Walking: step in on the lead foot and chop down from overhead.
+  // Walking: step in on the lead foot and chop down from overhead, arm reaching out so the blade travels a wide arc.
   walk: {
     time: 0.72, strikeAt: 0.5,
-    speed: (t) => 2.3 * bell(t, 0.12, 0.6),
+    speed: (t) => 2.8 * bell(t, 0.12, 0.6),
     keys: [
-      [0.3, { rS: -2.6, rO: -0.45, rE: -1.7, rW: -0.5, twist: -0.4, hipYaw: -0.45, lean: -0.08, drop: 0.05, lS: -1.2, lE: -0.5, lO: 0.15, fzL: 0.05, fzR: -0.22 }],
-      [0.52, { rS: -0.95, rO: 0.2, rY: 0.25, rE: -0.2, rW: 0.55, twist: 0.5, hipYaw: -0.1, lean: 0.36, drop: 0.17, lS: 0.35, lE: -0.7, lO: 0.3, fzL: 0.48, fzR: -0.38 }],
-      [0.72, { rS: -0.4, rO: 0.45, rY: 0.3, rE: -0.4, rW: 0.65, twist: 0.62, hipYaw: 0, lean: 0.4, drop: 0.18, lS: 0.4, lE: -0.8, lO: 0.3, fzL: 0.45, fzR: -0.35 }],
+      [0.3, { rS: -2.6, rO: -0.45, rE: -1.1, rW: -0.1, twist: -0.4, hipYaw: -0.45, lean: -0.08, drop: 0.05, lS: -1.2, lE: -0.5, lO: 0.15, fzL: 0.05, fzR: -0.22 }],
+      [0.52, { rS: -1.35, rO: 0.05, rY: 0.1, rE: -0.02, rW: 1.05, twist: 0.5, hipYaw: -0.1, lean: 0.36, drop: 0.17, lS: 0.35, lE: -0.7, lO: 0.3, fzL: 0.48, fzR: -0.38 }],
+      [0.72, { rS: -0.75, rO: 0.25, rY: 0.2, rE: -0.1, rW: 1.0, twist: 0.62, hipYaw: 0, lean: 0.4, drop: 0.18, lS: 0.4, lE: -0.8, lO: 0.3, fzL: 0.45, fzR: -0.35 }],
       [1, {}],
     ],
   },
@@ -1060,5 +1075,7 @@ function samplePose(atk: Attack, t: number): Pose {
 // --- fit tuning for props on the body ---
 // a blade only cuts for a short stretch around each attack's strike moment (fractions of the attack)
 const STRIKE_LEAD = 0.16, STRIKE_FOLLOW = 0.1;
+// aiming high or low: shoulder tilt (rad), torso lean (rad) and crouch (m) at full aim
+const AIM_ARM = 0.5, AIM_LEAN = 0.12, AIM_CROUCH = 0.1;
 const FIST_CURL = 1.3; // right hand gripping the sword, radians per finger joint
 const GRIP = { x: 0.03, y: -0.09, z: 0.0 }; // sword grip, relative to the right wrist
