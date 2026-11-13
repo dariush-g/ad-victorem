@@ -18,11 +18,13 @@ export function createVitalBars(vitals: Vitals, parent: HTMLElement) {
   parent.appendChild(wrap);
   let shown = '';
   return () => {
-    const key = `${Math.ceil(vitals.health)}/${vitals.maxHealth}/${Math.round(vitals.stamina * 4)}/${vitals.maxStamina}/${vitals.winded}`;
+    const bleeding = vitals.bleeding > 0.05;
+    const key = `${Math.ceil(vitals.health)}/${vitals.maxHealth}/${Math.round(vitals.stamina * 4)}/${vitals.maxStamina}/${vitals.winded}/${bleeding}`;
     if (key === shown) return;
     shown = key;
     hp.fill.style.width = `${(vitals.health / vitals.maxHealth) * 100}%`;
-    hp.text.textContent = `${Math.ceil(vitals.health)} / ${vitals.maxHealth}`;
+    hp.text.textContent = `${Math.ceil(vitals.health)} / ${vitals.maxHealth}${bleeding ? ' · bleeding' : ''}`;
+    hp.b.classList.toggle('bleeding', bleeding);
     sp.fill.style.width = `${(vitals.stamina / vitals.maxStamina) * 100}%`;
     sp.text.textContent = `${Math.floor(vitals.stamina)} / ${vitals.maxStamina}`;
     sp.b.classList.toggle('winded', vitals.winded);
@@ -57,7 +59,7 @@ const CALLOUTS: Callout[] = [
 ];
 
 /** The "body" tab. `canvas` is where portrait.ts draws the figure. */
-export function createCharacterSheet(vitals: Vitals) {
+export function createCharacterSheet(vitals: Vitals, armour: () => string) {
   const el = document.createElement('div');
   el.className = 'sheet';
   const figure = el.appendChild(document.createElement('div'));
@@ -107,7 +109,7 @@ export function createCharacterSheet(vitals: Vitals) {
       Array.from(pips.children).forEach((p, i) => p.classList.toggle('on', i < lvl));
       note.textContent = c.note(vitals);
     }
-    live.textContent = `Health ${Math.ceil(vitals.health)} / ${vitals.maxHealth} · Stamina ${Math.floor(vitals.stamina)} / ${vitals.maxStamina} · Armour ${Math.round(vitals.protection * 100)}%`;
+    live.textContent = `Health ${Math.ceil(vitals.health)} / ${vitals.maxHealth} · Stamina ${Math.floor(vitals.stamina)} / ${vitals.maxStamina} · ${armour()}`;
   };
   return { el, canvas, render };
 }

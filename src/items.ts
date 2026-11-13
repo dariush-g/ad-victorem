@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { mat, solid, PALETTE } from './style';
+import type { Zone } from './hits';
 
 export type Slot = 'weapon' | 'head' | 'tunic' | 'chest' | 'arm' | 'garb' | 'belt' | 'legs';
 export const SLOTS: Slot[] = ['weapon', 'head', 'tunic', 'chest', 'arm', 'garb', 'belt', 'legs'];
@@ -16,28 +17,29 @@ export interface ItemDef {
   stack: number;
   icon: 'sword' | 'cloth' | 'belt' | 'coin' | 'tunic' | 'helmet' | 'plate' | 'greave' | 'arm';
   tint: string; // icon colour
-  /** Weapons: multipliers on the attack's reach and on how hard it hits. */
-  reach?: number;
+  /** Weapons: how hard it hits (×), the striking part along the blade (metres from the grip), and how well it cuts (0 blunt .. 1 sharp; sets bleeding). */
   power?: number;
+  blade?: [number, number];
+  edge?: number;
   /** Clothing: cloth colour. */
   color?: number;
-  /** Points of protection while worn; each point turns away 1% of a blow. */
-  armor?: number;
+  /** Armour: share of a blow to each body zone that this piece turns away. */
+  covers?: Partial<Record<Zone, number>>;
 }
 
 const defs: ItemDef[] = [
-  { id: 'rudis', name: 'Wooden sword', desc: 'Training sword. Heavy, blunt, and yours until you earn better.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#b9793f', reach: 1, power: 1 },
-  { id: 'gladius', name: 'Short sword', desc: 'Iron sword of the legions. Shorter than the wooden one, and hits far harder.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#cfd3da', reach: 0.94, power: 1.7 },
+  { id: 'rudis', name: 'Wooden sword', desc: 'Training sword. Heavy, blunt, and yours until you earn better.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#b9793f', power: 1, blade: [0.1, 0.83], edge: 0.3 },
+  { id: 'gladius', name: 'Short sword', desc: 'Iron sword of the legions. Shorter than the wooden one, and hits far harder.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#cfd3da', power: 1.7, blade: [0.1, 0.64], edge: 1 },
   { id: 'subligaculum', name: 'Loincloth', desc: 'Undyed linen. What every slave is issued.', slot: 'garb', stack: 1, icon: 'cloth', tint: '#dccdaa', color: 0xd9c9a6 },
   { id: 'subligaculum_red', name: 'Red loincloth', desc: 'Loincloth dyed with madder root. The crowd can pick you out from the top row.', slot: 'garb', stack: 1, icon: 'cloth', tint: '#b33a34', color: PALETTE.crimson },
   { id: 'cord', name: 'Rope belt', desc: 'A length of rope, knotted at the hip.', slot: 'belt', stack: 1, icon: 'belt', tint: '#b89a62' },
-  { id: 'balteus', name: 'Leather belt', desc: 'Broad belt with a bronze buckle and studs.', slot: 'belt', stack: 1, icon: 'belt', tint: '#8a5433' },
-  { id: 'tunica', name: 'Tunic', desc: 'Coarse undyed wool, sewn at the shoulders and belted at the waist. Falls to mid-thigh.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#cdb98f', color: 0xc8b48a, armor: 2 },
-  { id: 'tunica_russa', name: 'Red tunic', desc: 'Wool tunic dyed russet. Hides the blood.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#8c3f33', color: 0x83392e, armor: 2 },
-  { id: 'galea', name: 'Helmet', desc: 'Bronze helmet with cheek pieces, a neck guard and a horsehair crest.', slot: 'head', stack: 1, icon: 'helmet', tint: '#c9954a', armor: 12 },
-  { id: 'pectorale', name: 'Chest plate', desc: 'Square bronze plate over the heart, held by leather straps.', slot: 'chest', stack: 1, icon: 'plate', tint: '#c9954a', armor: 15 },
-  { id: 'manica', name: 'Arm guard', desc: 'Banded leather sleeve with a bronze shoulder cap, for the sword arm.', slot: 'arm', stack: 1, icon: 'arm', tint: '#8a5433', armor: 8 },
-  { id: 'ocreae', name: 'Greaves', desc: 'Pair of bronze greaves, knee to ankle.', slot: 'legs', stack: 1, icon: 'greave', tint: '#c9954a', armor: 8 },
+  { id: 'balteus', name: 'Leather belt', desc: 'Broad belt with a bronze buckle and studs.', slot: 'belt', stack: 1, icon: 'belt', tint: '#8a5433', covers: { torso: 0.08 } },
+  { id: 'tunica', name: 'Tunic', desc: 'Coarse undyed wool, sewn at the shoulders and belted at the waist. Falls to mid-thigh.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#cdb98f', color: 0xc8b48a, covers: { torso: 0.12, thigh: 0.1 } },
+  { id: 'tunica_russa', name: 'Red tunic', desc: 'Wool tunic dyed russet. Hides the blood.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#8c3f33', color: 0x83392e, covers: { torso: 0.12, thigh: 0.1 } },
+  { id: 'galea', name: 'Helmet', desc: 'Bronze helmet with cheek pieces, a neck guard and a horsehair crest.', slot: 'head', stack: 1, icon: 'helmet', tint: '#c9954a', covers: { head: 0.8, neck: 0.4 } },
+  { id: 'pectorale', name: 'Chest plate', desc: 'Square bronze plate over the heart, held by leather straps.', slot: 'chest', stack: 1, icon: 'plate', tint: '#c9954a', covers: { torso: 0.55 } },
+  { id: 'manica', name: 'Arm guard', desc: 'Banded leather sleeve with a bronze shoulder cap, for the sword arm.', slot: 'arm', stack: 1, icon: 'arm', tint: '#8a5433', covers: { armR: 0.65 } },
+  { id: 'ocreae', name: 'Greaves', desc: 'Pair of bronze greaves, knee to ankle.', slot: 'legs', stack: 1, icon: 'greave', tint: '#c9954a', covers: { leg: 0.7 } },
   { id: 'denarius', name: 'Silver coin', desc: 'Silver coin. Enough of these buys a man his freedom.', stack: 99, icon: 'coin', tint: '#d9dbe0' },
 ];
 export const ITEMS: Record<string, ItemDef> = Object.fromEntries(defs.map((d) => [d.id, d]));

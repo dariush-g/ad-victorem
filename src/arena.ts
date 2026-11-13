@@ -2,9 +2,78 @@ import * as THREE from 'three';
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { mat, solid, PALETTE, SUN_DIR, bowl } from './style';
+import { segmentDistance } from './hits';
 
 export const R = 22; // sand radius
 const SEG = 128;
+
+/** Which gate: +1 north (+z), -1 south (-z). The two gateways are the same room turned half a circle. */
+export type Side = 1 | -1;
+
+/** Holding room behind each portcullis, under the stands. Measured with the gate on +z. */
+const ROOM = {
+  halfW: 2.1,
+  z0: R + 0.35, // inner face of the gate pillars
+  z1: R + 8,
+  floor: 0.5, // flagstones sit above the sand drifted against the wall
+  ceil: 3.6,
+  doorHalfW: 1.625,
+  doorH: 2.95,
+};
+
+/** Where the local player is held: which gateway is theirs, and which side of its gate they are on while it is shut. */
+export const site = { side: 1 as Side, zone: 'room' as 'room' | 'arena' };
+const gateLift: Record<Side, number> = { [1]: 0, [-1]: 0 }; // 0 shut .. 1 fully raised
+const PASSABLE = 0.75;
+
+/** Standing spot in a gateway room, and the heading that faces its gate. */
+export function spawnPoint(side: Side) {
+  return { pos: new THREE.Vector3(0, ROOM.floor, side * (R + 4)), facing: side === 1 ? Math.PI : 0 };
+}
+
+/**
+ * Keep a circle of radius `r` inside the walls. With the local gate shut that is the room or the
+ * sand, whichever `site.zone` says; with it raised, both plus the doorway between them.
+ */
+export function confine(p: { x: number; z: number }, r: number) {
+  const s = site.side, z = p.z * s;
+  const { clamp } = THREE.MathUtils;
+  const sand = () => {
+    const d = Math.hypot(p.x, p.z), lim = R - r;
+    if (d > lim) {
+      p.x *= lim / d;
+      p.z *= lim / d;
+    }
+  };
+  const room = (zMin: number) => {
+    p.x = clamp(p.x, r - ROOM.halfW, ROOM.halfW - r);
+    p.z = clamp(z, zMin, ROOM.z1 - r) * s;
+  };
+  const front = ROOM.z0 + r;
+  if (gateLift[s] < PASSABLE) return site.zone === 'room' ? room(front) : sand();
+  if (Math.hypot(p.x, z) <= R - r) return;
+  if (z < R - 1 || Math.abs(p.x) > ROOM.halfW + 0.5) return sand();
+  if (z >= front) return room(front);
+  // in the thickness of the wall: free inside the opening, otherwise pushed back out of the stone
+  const door = ROOM.doorHalfW - r;
+  if (Math.abs(p.x) <= door) return;
+  if (Math.abs(p.x) < door + 0.3) p.x = clamp(p.x, -door, door);
+  else if (z > (R - r + front) / 2) room(front);
+  else sand();
+}
+
+/** Walkable height: flagstones through the gateways, sand everywhere else. */
+export function groundHeight(x: number, z: number): number {
+  if (Math.abs(z) > R - 0.45 && Math.abs(x) < ROOM.halfW + 0.5) return ROOM.floor;
+  return sandHeight(x, z);
+}
+
+/** Height of whatever is overhead: the room ceiling, the gate lintel, or open sky. */
+export function ceilingAt(x: number, z: number): number {
+  const az = Math.abs(z);
+  if (az <= R - 0.3 || Math.abs(x) > ROOM.halfW + 0.5) return Infinity;
+  return az > ROOM.z0 ? ROOM.ceil : ROOM.doorH;
+}
 
 /** Pushable circle body (barrels). Placeholder physics: slide, friction, bounce. */
 interface Body {
@@ -81,6 +150,10 @@ export function createArena(scene: THREE.Scene) {
   glow.position.set(-SUN_DIR.x, 0.45, -SUN_DIR.z);
   scene.add(glow);
 
+  const torches: THREE.Mesh[] = [];
+  const torchLight = new THREE.PointLight(0xff9a4a, 14, 11, 1.8);
+  let time = 0;
+
   // --- ring helpers (arena is built from concentric steps, merged into one mesh per material) ---
   const parts = new Map<THREE.Material, THREE.BufferGeometry[]>();
   const tint = (geo: THREE.BufferGeometry, shade: (y: number) => number) => {
@@ -111,8 +184,45 @@ export function createArena(scene: THREE.Scene) {
 
   // --- podium wall + stepped seating (cavea) ---
   const PODIUM = 4.5, TIERS = 12, TREAD = 1.9, RISER = 1.45, LEDGE = 1.2;
-  wallRing(R, 0, PODIUM, stone, 0.76);
-  wallRing(R - 0.01, 0, 0.5, stoneDark); // plinth band
+  // the wall is left open behind both gates, where the holding rooms look out through the bars
+  const DOOR_H = 3, doorA = Math.asin(1.65 / R);
+  const podiumBand = (r: number, y0: number, y1: number, m: THREE.Material, s0: number, s1: number, gap = 0) => {
+    for (let k = 0; k < (gap ? 2 : 1); k++) {
+      const geo = gap
+        ? new THREE.CylinderGeometry(r, r, y1 - y0, SEG / 2, 1, true, k * Math.PI + gap, Math.PI - gap * 2)
+        : new THREE.CylinderGeometry(r, r, y1 - y0, SEG, 1, true);
+      geo.translate(0, (y0 + y1) / 2, 0);
+      add(tint(geo, (y) => (y > (y0 + y1) / 2 ? s1 : s0)), m);
+    }
+  };
+  const doorShade = 0.76 + 0.24 * (DOOR_H / PODIUM);
+  podiumBand(R, 0, DOOR_H, stone, 0.76, doorShade, doorA);
+  podiumBand(R, DOOR_H, PODIUM, stone, doorShade, 1);
+  podiumBand(R - 0.01, 0, 0.5, stoneDark, 0.86, 1, doorA); // plinth band
+
+  // --- holding rooms: flagstone floor, three walls and a ceiling, tucked under the seating ---
+  {
+    const { halfW, z1, floor, ceil } = ROOM, doorHalfW = 1.65;
+    const zf = Math.sqrt(R * R - halfW * halfW); // where the side walls meet the curved podium wall
+    // each panel is built for the north gateway, then copied half a turn round for the south
+    const panel = (w: number, h: number, m: THREE.Material, shade: (y: number) => number, place: (g: THREE.BufferGeometry) => void) => {
+      const geo = new THREE.PlaneGeometry(w, h, Math.ceil(w), 1);
+      place(geo);
+      add(tint(geo, shade), m);
+      add(geo.clone().rotateY(Math.PI), m);
+    };
+    const wallShade = (y: number) => (y > 1 ? 0.78 : 0.55);
+    const len = z1 - zf, zm = (z1 + zf) / 2;
+    panel(len, ceil, stone, wallShade, (g) => g.rotateY(Math.PI / 2).translate(-halfW, ceil / 2, zm));
+    panel(len, ceil, stone, wallShade, (g) => g.rotateY(-Math.PI / 2).translate(halfW, ceil / 2, zm));
+    panel(halfW * 2, ceil, stone, wallShade, (g) => g.rotateY(Math.PI).translate(0, ceil / 2, z1));
+    panel(halfW * 2, len, stoneDark, () => 0.5, (g) => g.rotateX(Math.PI / 2).translate(0, ceil, zm));
+    panel(halfW * 2, len, stoneDark, () => 0.8, (g) => g.rotateX(-Math.PI / 2).translate(0, floor, zm));
+    // threshold between the gate pillars, with a riser down to the sand
+    const z0 = R - 0.45;
+    panel(doorHalfW * 2, zf - z0, stoneDark, () => 0.8, (g) => g.rotateX(-Math.PI / 2).translate(0, floor, (zf + z0) / 2));
+    panel(doorHalfW * 2, floor + 0.2, stoneDark, () => 0.7, (g) => g.rotateY(Math.PI).translate(0, (floor - 0.2) / 2, z0));
+  }
   flatRing(R, R + LEDGE, PODIUM, stoneDark);
   let rr = R + LEDGE, top = PODIUM;
   for (let k = 0; k < TIERS; k++) {
@@ -158,14 +268,17 @@ export function createArena(scene: THREE.Scene) {
   shafts.receiveShadow = caps.receiveShadow = true;
   scene.add(shafts, caps);
 
-  // --- gates (portcullis) at north & south ---
-  const gate = (angle: number) => {
+  // --- gates (portcullis) at north & south: the grille lifts into the lintel ---
+  const gateIron = mat(PALETTE.iron, { surface: 'metal' });
+  gateIron.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 3.2)]; // raised bars vanish inside the lintel
+  const GATE_RISE = 2.8, GATE_TIME = 1.8;
+  const grilles = {} as Record<Side, THREE.Group>;
+  const gateTarget: Record<Side, number> = { [1]: 0, [-1]: 0 };
+  const gate = (side: Side) => {
+    const angle = side === 1 ? 0 : Math.PI;
     const g = new THREE.Group();
     g.position.set(Math.sin(angle) * R, 0, Math.cos(angle) * R);
     g.rotation.y = angle + Math.PI; // local +z faces arena centre
-    const dark = new THREE.Mesh(new THREE.BoxGeometry(3.3, 3, 0.5), new THREE.MeshBasicMaterial({ color: 0x140e0c }));
-    dark.position.set(0, 1.5, 0);
-    g.add(dark);
     for (const x of [-1.9, 1.9]) {
       const p = solid(new RoundedBoxGeometry(0.55, 3.3, 0.9, 4, 0.06), marble);
       p.position.set(x, 1.65, 0.1);
@@ -174,21 +287,65 @@ export function createArena(scene: THREE.Scene) {
     const lintel = solid(new RoundedBoxGeometry(4.5, 0.5, 1.0, 4, 0.06), marble);
     lintel.position.set(0, 3.2, 0.1);
     g.add(lintel);
+    const grille = new THREE.Group();
     for (let i = -3; i <= 3; i++) {
-      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3, 8), iron);
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3, 8), gateIron);
       bar.position.set(i * 0.45, 1.5, 0.32);
-      g.add(bar);
+      grille.add(bar);
     }
     for (const y of [0.8, 1.6, 2.4]) {
-      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3.2, 8), iron);
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 3.2, 8), gateIron);
       bar.rotation.z = Math.PI / 2;
       bar.position.set(0, y, 0.32);
-      g.add(bar);
+      grille.add(bar);
     }
+    g.add(grille);
+    grilles[side] = grille;
     scene.add(g);
   };
-  gate(0);
-  gate(Math.PI);
+  gate(1);
+  gate(-1);
+  /** Raise or drop a portcullis; it takes a couple of seconds to travel. */
+  const setGate = (side: Side, open: boolean) => void (gateTarget[side] = open ? 1 : 0);
+  const gateOpen = (side: Side) => gateLift[side] >= PASSABLE;
+
+  // --- holding room furnishings: a bench and two torches each ---
+  const TORCH_Z = R + 3.2;
+  {
+    const { halfW, z1, floor } = ROOM;
+    const flameMat = new THREE.MeshBasicMaterial({ color: 0xffb648, fog: false });
+    for (const side of [1, -1] as Side[]) {
+      const room = new THREE.Group();
+      room.rotation.y = side === 1 ? 0 : Math.PI;
+      const bench = new THREE.Group();
+      const seat = solid(new RoundedBoxGeometry(0.45, 0.08, 2.2, 2, 0.02), wood);
+      seat.position.y = 0.46;
+      bench.add(seat);
+      for (const z of [-0.85, 0.85]) {
+        const leg = solid(new RoundedBoxGeometry(0.4, 0.44, 0.1, 2, 0.02), woodDark);
+        leg.position.set(0, 0.22, z);
+        bench.add(leg);
+      }
+      bench.position.set(halfW - 0.32, floor, z1 - 2.4);
+      room.add(bench);
+      for (const wall of [-1, 1]) {
+        const torch = new THREE.Group();
+        const shaft = solid(new THREE.CylinderGeometry(0.035, 0.045, 0.6, 10), woodDark);
+        const cup = solid(new THREE.CylinderGeometry(0.09, 0.05, 0.12, 12), iron);
+        cup.position.y = 0.34;
+        const flame = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.26, 10), flameMat);
+        flame.position.y = 0.52;
+        torch.add(shaft, cup, flame);
+        torch.position.set(wall * (halfW - 0.16), floor + 1.75, TORCH_Z);
+        torch.rotation.z = wall * 0.35; // leaning out from its bracket
+        room.add(torch);
+        torches.push(flame);
+      }
+      scene.add(room);
+    }
+    torchLight.position.set(0, floor + 2.3, TORCH_Z);
+    scene.add(torchLight);
+  }
 
   // --- banners on the podium wall ---
   const cloth = mat(PALETTE.banner, { surface: 'cloth' }), gold = mat(PALETTE.gold, { surface: 'metal' });
@@ -208,7 +365,18 @@ export function createArena(scene: THREE.Scene) {
   }
 
   // --- training posts ---
+  // training posts only stand on the sand in practice mode; otherwise they are hidden and solid to nothing
   const pali: Palus[] = [];
+  let practice = false;
+  const posts = () => (practice ? pali : []);
+  /** Put the training posts out (upright and still) or take them away. */
+  const setPractice = (on: boolean) => {
+    practice = on;
+    for (const p of pali) {
+      p.pivot.visible = on;
+      p.tx = p.tz = p.wx = p.wz = 0;
+    }
+  };
   const addPalus = (x: number, z: number) => {
     const pivot = new THREE.Group();
     pivot.position.set(x, sandHeight(x, z) - 0.05, z);
@@ -225,6 +393,7 @@ export function createArena(scene: THREE.Scene) {
     shield.position.set(0, 1.25, 0.22);
     pivot.add(post, arm, head, shield);
     pivot.rotation.y = Math.atan2(-x, -z); // shield faces centre-ish
+    pivot.visible = false;
     scene.add(pivot);
     pali.push({ pivot, x, z, r: 0.3, tx: 0, tz: 0, wx: 0, wz: 0 });
   };
@@ -260,12 +429,19 @@ export function createArena(scene: THREE.Scene) {
   function update(dt: number, player: Mover) {
     // keep the player on the sand and out of the posts
     const pp = player.pos;
-    const pd = Math.hypot(pp.x, pp.z), lim = R - player.radius;
-    if (pd > lim) {
-      pp.x *= lim / pd;
-      pp.z *= lim / pd;
+    confine(pp, player.radius);
+    // torch flicker
+    time += dt;
+    const flick = 0.5 + 0.5 * Math.sin(time * 11) * Math.sin(time * 7.3 + 1.1);
+    torchLight.intensity = 12 + 4 * flick;
+    torchLight.position.z = site.side * TORCH_Z; // one light, kept in whichever room the player was given
+    for (const side of [1, -1] as Side[]) {
+      const d = gateTarget[side] - gateLift[side];
+      gateLift[side] += Math.sign(d) * Math.min(Math.abs(d), dt / GATE_TIME);
+      grilles[side].position.y = gateLift[side] * GATE_RISE;
     }
-    for (const p of pali) {
+    for (const f of torches) f.scale.set(1, 0.9 + 0.25 * flick, 1);
+    for (const p of posts()) {
       const dx = pp.x - p.x, dz = pp.z - p.z, d = Math.hypot(dx, dz), min = p.r + player.radius;
       if (d < min && d > 1e-4 && pp.y < 2) {
         pp.x = p.x + (dx / d) * min;
@@ -295,7 +471,7 @@ export function createArena(scene: THREE.Scene) {
       b.vx *= friction;
       b.vz *= friction;
       // posts
-      for (const p of pali) {
+      for (const p of posts()) {
         dx = bp.x - p.x; dz = bp.z - p.z; d = Math.hypot(dx, dz); min = b.r + p.r;
         if (d < min && d > 1e-4) {
           const nx = dx / d, nz = dz / d;
@@ -345,23 +521,28 @@ export function createArena(scene: THREE.Scene) {
     }
   }
 
-  /** Strike from `origin` toward unit `dir` (xz); `power` scales the shove. Returns number of things hit. */
-  function strike(origin: THREE.Vector3, dir: THREE.Vector3, reach = 1.7, power = 1): number {
+  /**
+   * A weapon segment a–b (radius `wr`) at this moment of a swing: shove whatever post or barrel it
+   * touches along `dir`. Each thing is struck once per swing; `struck` remembers which. Returns new hits.
+   */
+  const _p = new THREE.Vector3(), _q = new THREE.Vector3();
+  function touch(a: THREE.Vector3, b: THREE.Vector3, wr: number, dir: THREE.Vector3, power: number, struck: Set<object>): number {
     let hits = 0;
-    const test = (x: number, z: number, r: number) => {
-      const dx = x - origin.x, dz = z - origin.z, d = Math.hypot(dx, dz);
-      return d < reach + r && d > 1e-4 && (dx * dir.x + dz * dir.z) / d > 0.4;
-    };
-    for (const b of bodies) {
-      if (!test(b.mesh.position.x, b.mesh.position.z, b.r)) continue;
-      b.vx += dir.x * 7 * power;
-      b.vz += dir.z * 7 * power;
-      hits++;
-    }
-    for (const p of pali) {
-      if (!test(p.x, p.z, p.r)) continue;
+    for (const p of posts()) {
+      if (struck.has(p)) continue;
+      const y = p.pivot.position.y;
+      if (segmentDistance(a, b, _p.set(p.x, y, p.z), _q.set(p.x, y + 2.35, p.z)) > 0.25 + wr) continue;
+      struck.add(p);
       p.wx += dir.x * 4.5 * power;
       p.wz += dir.z * 4.5 * power;
+      hits++;
+    }
+    for (const body of bodies) {
+      const bp = body.mesh.position;
+      if (struck.has(body) || segmentDistance(a, b, _p.set(bp.x, bp.y - 0.5, bp.z), _q.set(bp.x, bp.y + 0.5, bp.z)) > body.r + wr) continue;
+      struck.add(body);
+      body.vx += dir.x * 7 * power;
+      body.vz += dir.z * 7 * power;
       hits++;
     }
     return hits;
@@ -370,11 +551,11 @@ export function createArena(scene: THREE.Scene) {
   /** Distance from a point to the nearest enemy. Placeholder: the training posts stand in for enemies. */
   function enemyDistance(pos: THREE.Vector3): number {
     let best = Infinity;
-    for (const p of pali) best = Math.min(best, Math.hypot(p.x - pos.x, p.z - pos.z) - p.r);
+    for (const p of posts()) best = Math.min(best, Math.hypot(p.x - pos.x, p.z - pos.z) - p.r);
     return best;
   }
 
-  return { update, strike, enemyDistance };
+  return { update, touch, enemyDistance, setGate, gateOpen, setPractice };
 }
 
 /** Sand surface height: low dunes, scuffed hollows, drift piled against the wall. */

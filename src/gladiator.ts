@@ -5,14 +5,16 @@ import { Verlet } from './ragdoll';
 import { Outfit } from './outfit';
 import { analyzeBody } from './garments';
 import { ITEMS, SLOTS, buildWeapon, disposeTree, type Slot } from './items';
+import type { Part } from './hits';
 
 // Body: "Universal Base Characters" by Quaternius (CC0) — see public/models/gladiator/LICENSE.txt
 const MODEL_DIR = '/models/gladiator/';
 
 // --- movement ---
-const WALK = 1.8, RUN = 5.0, JUMP = 4.7, GRAVITY = 16;
+const WALK = 1.5, RUN = 5.0, JUMP = 3.8, GRAVITY = 16; // jump: ~0.45 m high, ~0.48 s in the air
 const ACCEL = 16, DECEL = 20, AIR_ACCEL = 3, TURN = 9;
 const BACKPEDAL = 0.62; // backward walking speed, as a fraction of WALK
+const SETTLE_RATE = 7; // radians of gait phase per second while finishing the last step on stopping
 // --- ragdoll ---
 const RAG_MIN_TIME = 1.2, RAG_MAX_TIME = 6, GETUP_TIME = 0.9;
 
@@ -81,13 +83,15 @@ function aimLimb(from: THREE.Vector3, to: THREE.Vector3, hint: THREE.Vector3, ou
   return out.setFromRotationMatrix(_m.makeBasis(_x, _y, _z));
 }
 
-export async function loadGladiator(ground: Ground, wallR: number): Promise<Gladiator> {
+export type Confine = (p: THREE.Vector3, r: number) => void;
+
+export async function loadGladiator(ground: Ground, confine: Confine, spawn: THREE.Vector3): Promise<Gladiator> {
   const loader = new GLTFLoader();
   const [body, hair] = await Promise.all([
     loader.loadAsync(MODEL_DIR + 'body.gltf'),
     loader.loadAsync(MODEL_DIR + 'hair.gltf'),
   ]);
-  return new Gladiator(ground, wallR, body.scene, hair.scene);
+  return new Gladiator(ground, confine, spawn, body.scene, hair.scene);
 }
 
 /**
@@ -97,19 +101,20 @@ export async function loadGladiator(ground: Ground, wallR: number): Promise<Glad
  */
 export class Gladiator {
   root = new THREE.Group();
-  pos = new THREE.Vector3(0, 0, 13); // feet / physics position
+  pos = new THREE.Vector3(); // feet / physics position
   vel = new THREE.Vector3();
   radius = 0.35;
   facing = Math.PI;
-  /** Called once per swing when the blow lands. */
-  onStrike = (_origin: THREE.Vector3, _dir: THREE.Vector3, _reach: number) => {};
+  /** Counts swings, so a blow can be matched to the swing that dealt it (one hit per swing). */
+  swing = 0;
+  /** While set, a limp body stays down: nothing gets it back on its feet. */
+  stayDown = false;
 
   private onGround = true;
   private attackT = -1; // seconds into the attack; <0 = not attacking
   private attack: Attack = ATTACKS.stand;
   private attackV0 = 0; // ground speed when the attack began
   private prevStance = [0, 0];
-  private struck = false;
   private phase = 0;
   private time = 0;
   private squat = 0; // landing compression
@@ -117,6 +122,8 @@ export class Gladiator {
   private accL = 0;
   private prevVel = new THREE.Vector3();
   private lastDt = 1 / 60;
+  private moveW = 0; // eased share of the walk cycle in the pose
+  private backTarget = false; // last clear reading of whether we are stepping backward
 
   // skeleton dimensions, measured from the model's bind pose
   private pelvisY = 0.95;
@@ -147,7 +154,6 @@ export class Gladiator {
   private weaponMount: THREE.Group;
   private weapon: THREE.Object3D | null = null;
   private worn = Object.fromEntries(SLOTS.map((s) => [s, null])) as Record<Slot, string | null>;
-  private reachMul = FIST_REACH;
   /** Standing height in metres, measured from the model. */
   height = 1.8;
   /** Multiplier on walking and running speed (agility). */
@@ -165,7 +171,8 @@ export class Gladiator {
   private limbQ = new THREE.Quaternion();
   private limbQ2 = new THREE.Quaternion();
 
-  constructor(private ground: Ground, private wallR: number, model: THREE.Object3D, hair: THREE.Object3D) {
+  constructor(private ground: Ground, private confine: Confine, spawn: THREE.Vector3, model: THREE.Object3D, hair: THREE.Object3D) {
+    this.pos.copy(spawn);
     // ---- skinned body: house-style materials, bind-pose measurements ----
     this.root.add(model);
     model.updateMatrixWorld(true);
@@ -278,6 +285,9 @@ export class Gladiator {
     this.armR.upper.rotation.order = 'YXZ';
     this.legL = makeLeg('l', 1);
     this.legR = makeLeg('r', -1);
+    // order ZYX: a leg can undo the pelvis's twist and tilt before swinging, so a planted foot stays put
+    this.legL.upper.rotation.order = 'ZYX';
+    this.legR.upper.rotation.order = 'ZYX';
 
     // fingers: remember the bind pose so they can be curled every frame
     const fingerNames: [string, number][] = [['index', 0.85], ['middle', 0.95], ['ring', 1.05], ['pinky', 1.15]];
@@ -368,18 +378,95 @@ export class Gladiator {
       if (this.weapon) disposeTree(this.weapon);
       this.weapon = id ? buildWeapon(id) : null;
       if (this.weapon) this.weaponMount.add(this.weapon);
-      this.reachMul = id ? (ITEMS[id].reach ?? 1) : FIST_REACH;
     }
   }
 
   get attacking() {
     return this.attackT >= 0;
   }
+  /** Which swing is in progress (or was last thrown). */
+  get attackKind(): AttackKind {
+    return (Object.keys(ATTACKS) as AttackKind[]).find((k) => ATTACKS[k] === this.attack || PUNCHES[k] === this.attack)!;
+  }
+  /** The attacks on offer: sword swings with a weapon in hand, punches without. */
+  private get moves() {
+    return this.worn.weapon ? ATTACKS : PUNCHES;
+  }
+  /** Fall limp on the spot and stay down (death). */
+  collapse() {
+    this.stayDown = true;
+    if (!this.rag) this.startRagdoll();
+  }
+  /** Start a given swing now, whatever the controls say. Used to replay a remote fighter's attack. */
+  forceAttack(kind: AttackKind, facing: number) {
+    if (this.rag) return;
+    this.attack = this.moves[kind];
+    this.attackT = 0;
+    this.swing++;
+    this.attackV0 = Math.hypot(this.vel.x, this.vel.z);
+    this.facing = facing;
+  }
+  /** Stand somewhere else, on your feet and at rest: drops any ragdoll, swing or momentum. */
+  place(pos: THREE.Vector3, facing: number) {
+    this.rag = null;
+    this.stayDown = false;
+    this.blendT = GETUP_TIME;
+    this.attackT = -1;
+    this.pos.copy(pos);
+    this.vel.set(0, 0, 0);
+    this.prevVel.set(0, 0, 0);
+    this.onGround = true;
+    this.facing = facing;
+    this.root.position.copy(pos);
+    this.root.rotation.set(0, facing, 0);
+  }
   get grounded() {
     return this.onGround;
   }
   get ragdolled() {
     return this.rag !== null;
+  }
+
+  /** The cutting part of the swing: the blade (or fist) can wound only around the moment of impact. */
+  get striking() {
+    if (!this.attacking || this.rag) return false;
+    const t = this.attackT / this.attack.time, at = this.attack.strikeAt;
+    return t > at - STRIKE_LEAD && t < at + STRIKE_FOLLOW;
+  }
+
+  /** World-space ends of whatever strikes: the blade's edge, or the right fist. Returns its radius. */
+  weaponSegment(a: THREE.Vector3, b: THREE.Vector3): number {
+    this.root.updateMatrixWorld(true);
+    const blade = this.worn.weapon ? ITEMS[this.worn.weapon].blade : undefined;
+    if (blade) {
+      this.weaponMount.localToWorld(a.set(0, blade[0], 0));
+      this.weaponMount.localToWorld(b.set(0, blade[1], 0));
+      return 0.02;
+    }
+    this.armR.hand.getWorldPosition(a);
+    this.weaponMount.localToWorld(b.set(0, 0.03, 0)); // knuckles, just past the grip point in the palm
+    return 0.055;
+  }
+
+  /** The body as capsules, one or more per hit zone, in world space (posed as currently drawn). */
+  bodyParts(): Part[] {
+    this.root.updateMatrixWorld(true);
+    const at = (o: THREE.Object3D) => o.getWorldPosition(new THREE.Vector3());
+    const skull = at(this.headCenter), neckBase = at(this.head), pelvis = at(this.hips);
+    const parts: Part[] = [
+      { zone: 'head', a: skull, b: skull.clone(), r: 0.115 },
+      { zone: 'neck', a: neckBase.clone().lerp(skull, -0.15), b: neckBase.clone().lerp(skull, 0.4), r: 0.06 },
+      { zone: 'torso', a: pelvis, b: pelvis.clone().lerp(neckBase, 0.8), r: 0.15 },
+    ];
+    for (const [arm, zone] of [[this.armL, 'armL'], [this.armR, 'armR']] as const) {
+      const sh = at(arm.upper), el = at(arm.lower), wr = at(arm.hand);
+      parts.push({ zone, a: sh, b: el, r: 0.055 }, { zone, a: el, b: wr, r: 0.045 }, { zone, a: wr, b: wr.clone().lerp(el, -0.4), r: 0.05 });
+    }
+    for (const leg of [this.legL, this.legR]) {
+      const hip = at(leg.upper), knee = at(leg.lower), ankle = at(leg.foot);
+      parts.push({ zone: 'thigh', a: hip, b: knee, r: 0.085 }, { zone: 'leg', a: knee, b: ankle, r: 0.06 });
+    }
+    return parts;
   }
 
   update(dt: number, c: Controls) {
@@ -429,22 +516,16 @@ export class Gladiator {
 
     // --- attack: which one depends on how fast you were moving when you swung ---
     if (c.attack && !this.attacking && !gettingUp && grounded) {
-      this.attack = speed > RUN_ATTACK_SPEED ? ATTACKS.run : speed > WALK_ATTACK_SPEED ? ATTACKS.walk : ATTACKS.stand;
+      this.attack = this.moves[speed > RUN_ATTACK_SPEED ? 'run' : speed > WALK_ATTACK_SPEED ? 'walk' : 'stand'];
       this.attackT = 0;
-      this.struck = false;
+      this.swing++;
       this.attackV0 = speed;
       // a running lunge carries on along your path; the others turn to where you're aiming
-      this.facing = this.attack === ATTACKS.run ? Math.atan2(this.vel.x, this.vel.z) : c.aimYaw;
+      this.facing = this.attack === this.moves.run ? Math.atan2(this.vel.x, this.vel.z) : c.aimYaw;
     }
     if (this.attacking) {
       this.attackT += dt;
-      const t = this.attackT / this.attack.time;
-      if (!this.struck && t >= this.attack.strikeAt) {
-        this.struck = true;
-        const dir = new THREE.Vector3(Math.sin(this.facing), 0, Math.cos(this.facing));
-        this.onStrike(this.pos.clone(), dir, this.attack.reach * this.reachMul);
-      }
-      if (t >= 1) this.attackT = -1;
+      if (this.attackT / this.attack.time >= 1) this.attackT = -1;
     }
 
     // --- movement ---
@@ -511,11 +592,18 @@ export class Gladiator {
     const { hips, spine, head, armL, armR, legL, legR } = this;
     const yaw = this.root.rotation.y, sy = Math.sin(yaw), cy = Math.cos(yaw);
     const v = Math.hypot(this.vel.x, this.vel.z);
-    const amt = Math.min(1, v / 1.2);
-    const run = clamp((v - WALK) / (RUN - WALK), 0, 1);
+    const TAU = Math.PI * 2;
+    // Gait weights are eased rather than read straight off the speed, so starting, stopping,
+    // breaking into a run and turning round blend over a few frames instead of popping.
+    const amtNow = ease(Math.min(1, v / 1.2));
+    this.moveW += (amtNow - this.moveW) * (1 - Math.exp(-(amtNow > this.moveW ? 12 : 6) * dt)); // in quick, out gentler
+    const amt = this.moveW;
+    const run = this.ease('run', ease(clamp((v - WALK) / (RUN - WALK), 0, 1)), 5, dt);
     const idle = 1 - amt;
-    const backward = this.vel.x * sy + this.vel.z * cy < -0.25 * Math.max(v, 0.01); // stepping backward
-    const dirSign = backward ? -1 : 1;
+    // stepping backward; below a crawl, keep whatever we were doing (direction is noise there)
+    if (v > 0.3) this.backTarget = this.vel.x * sy + this.vel.z * cy < -0.25 * v;
+    const back = this.ease('back', this.backTarget ? 1 : 0, 8, dt);
+    const dirSign = 1 - 2 * back; // eases through zero instead of flipping the stride
 
     // character-local acceleration drives lean
     const inv = dt > 1e-5 ? 1 / dt : 0;
@@ -533,8 +621,25 @@ export class Gladiator {
 
     // Gait: each foot travels 2A backward during stance, so phase speed is tied to
     // ground speed and feet don't skate. Runs in reverse when backing up.
-    const A = lerp(0.4, 0.62, run) * (backward ? 0.7 : 1);
-    this.phase += (dirSign * dt * v * Math.PI) / (2 * A);
+    // Each foot is on the ground for a share D of the cycle: half of it walking, under a third
+    // running (the rest is flight). It travels 2A backward in that time, so for the feet not to skate
+    // the cycle must cover 2A / D of ground: that sets how fast the phase turns.
+    const D = lerp(0.5, 0.3, run);
+    // A is capped by what the legs can reach from the current hip height (pelvis lowest at contact
+    // when walking, a touch high at touchdown when running); a foot asked to go further would stop
+    // short and slide.
+    const bobContact = lerp(-0.03, 0.015, run) * amt;
+    const hipH = this.pelvisY + this.hipDY - this.ankle - (this.smoothed.drop ?? READY.drop) + bobContact;
+    const reach = 0.94 * (this.thigh + this.shin);
+    const A = Math.min(lerp(0.33, 0.4, run) * lerp(1, 0.7, back), Math.sqrt(Math.max(0.0025, reach * reach - hipH * hipH)));
+    this.phase += (dirSign * dt * v * TAU * D) / (2 * A);
+    // Coming to a halt: finish the step so the feet arrive side by side (phase π/2 + kπ, where both
+    // stride offsets are zero) instead of being dragged together across the sand.
+    if (v < 0.5 && amt > 0.02 && !this.attacking) {
+      const dir = this.backTarget ? -1 : 1, k = (this.phase - Math.PI / 2) / Math.PI;
+      const left = Math.abs((dir > 0 ? Math.ceil(k) : Math.floor(k)) - k) * Math.PI;
+      this.phase += dir * Math.min(left, dt * SETTLE_RATE);
+    }
     const ph = this.phase, cph = Math.cos(ph), sph = Math.sin(ph);
     const breath = Math.sin(this.time * 1.9);
     // Idle life: layered slow waves at unrelated rates, so the ready stance never loops visibly.
@@ -547,11 +652,10 @@ export class Gladiator {
     const bounce = Math.sin(t * 2.7) * guard; // fighter's weight bounce on the knees
     const swordBob = (Math.sin(t * 1.3 + 0.4) + 0.4 * Math.sin(t * 2.9)) * live;
     const guardBob = (Math.sin(t * 1.1 + 2.0) + 0.4 * Math.sin(t * 2.3 + 1.0)) * live;
-    const TAU = Math.PI * 2;
     const pos = (x: number) => 0.25 * (1 + x) * (1 + x); // smooth "positive part" of a -1..1 wave (no kinks)
 
     // ---- base pose: ready stance when still, blending into the stride when moving ----
-    const swing = (0.38 + 0.5 * run) * (backward ? 0.6 : 1);
+    const swing = (0.38 + 0.5 * run) * lerp(1, 0.6, back);
     const lagE = Math.cos(ph - 0.55), lagW = Math.cos(ph - 1.1);
     const R = _still;
     const pose: Pose = {
@@ -567,9 +671,9 @@ export class Gladiator {
       lO: lerp(R.lO, 0.13 + 0.06 * run - pos(cph) * 0.05, amt) + Math.sin(t * 0.8 + 0.5) * 0.03 * idle,
       lE: lerp(R.lE, -(0.42 + run) - pos(lagE) * 0.4, amt) + Math.sin(t * 1.1 + 2.9) * 0.08 * live * idle,
       twist: lerp(R.twist, -cph * 0.26, amt) + Math.sin(t * 0.55 + 1.0) * 0.05 * idle,
-      lean: lerp(R.lean, 0.03 + run * 0.2, amt) + clamp(this.accF * 0.012, -0.16, 0.2) - (backward ? 0.07 * amt : 0) + (bounce * 0.012 + breath * 0.012) * idle,
-      roll: clamp(-this.accL * 0.01, -0.18, 0.18) - sph * 0.03 * amt + shift * 0.022 * idle,
-      drop: lerp(R.drop, 0.055 + 0.05 * run, amt) + this.squat + (bounce * 0.013 + breath * 0.007) * idle,
+      lean: lerp(R.lean, 0.04 + run * 0.42, amt) + clamp(this.accF * 0.012, -0.16, 0.2) - 0.07 * amt * back + (bounce * 0.012 + breath * 0.012) * idle,
+      roll: clamp(-this.accL * 0.01, -0.18, 0.18) + sph * 0.035 * amt + shift * 0.022 * idle, // shoulders stay level over the dropping pelvis
+      drop: lerp(R.drop, 0.09 + 0.08 * run, amt) + this.squat + (bounce * 0.013 + breath * 0.007) * idle,
       hipYaw: lerp(R.hipYaw, cph * 0.14, amt) - Math.sin(t * 0.55 + 1.0) * 0.025 * idle,
       fzL: R.fzL * idle,
       fzR: R.fzR * idle,
@@ -587,42 +691,49 @@ export class Gladiator {
     // ---- legs: stride + stance offsets, planted on the sand under each foot ----
     const liftH = lerp(0.07, 0.2, run);
     const plan = (leg: Leg, phi: number, stance: number, i: number) => {
-      const u = ((phi % TAU) + TAU) % TAU;
-      const inAir = u < Math.PI, n = (inAir ? u : u - Math.PI) / Math.PI; // 0..1 through swing or stance
-      // stance: straight line back at ground speed. swing: cubic that matches that speed at both ends.
-      const stride = inAir ? ((-8 * n + 12) * n - 2) * n - 1 : 1 - 2 * n; // in units of A
+      const u = ((phi % TAU) + TAU) % TAU, sw = TAU * (1 - D);
+      const inAir = u < sw, n = inAir ? u / sw : (u - sw) / (TAU - sw); // 0..1 through swing or stance
+      // stance: straight line back at ground speed. swing: Hermite cubic from -1 to +1 whose end
+      // slopes match that ground speed, so the foot leaves and meets the sand without a jolt.
+      const r = (1 - D) / D;
+      const stride = inAir ? ((-4 * n + 6) * n) * n - 1 - 2 * r * (((2 * n - 3) * n + 1) * n) : 1 - 2 * n; // in units of A
       const sp = inAir ? Math.sin(Math.PI * n) : 0;
       const fz = stride * A * gait + stance;
-      const lx = leg.side * (this.hipX + 0.012 + pose.width);
+      const lx = leg.side * (this.hipX + 0.012 + pose.width - 0.04 * gait); // striding feet land close to the centre line, not out at the hips
       const gy = clamp(this.ground(this.pos.x + lx * cy + fz * sy, this.pos.z - lx * sy + fz * cy) - this.pos.y, -0.3, 0.3);
       // a foot being repositioned (stance change, lunge, step-in) lifts instead of dragging
       const stepLift = Math.min(0.1, Math.abs(stance - this.prevStance[i]) * inv * 0.035);
       this.prevStance[i] = stance;
-      return { fz, gy, lift: (sp > 0 ? sp * sp * liftH * 1.15 * gait : 0) + stepLift, phi }; // sin²: soft takeoff and landing
+      const comp = inAir ? 0 : Math.sin(Math.PI * n); // how deep into its stance (weight on it)
+      return { fz, gy, lift: (sp > 0 ? sp * sp * liftH * 1.15 * gait : 0) + stepLift, phi, comp }; // sin²: soft takeoff and landing
     };
     const L = plan(legL, ph, pose.fzL, 0), Rr = plan(legR, ph + Math.PI, pose.fzR, 1);
 
-    const bob = -Math.cos(2 * ph) * (0.03 + 0.015 * run) * gait;
+    const bob = lerp(-Math.cos(2 * ph) * 0.03, 0.015 - (L.comp + Rr.comp) * 0.05, run) * gait;
     const pelvisY = this.pelvisY - pose.drop + bob + (grounded ? Math.min(0, L.gy, Rr.gy) * 0.8 : 0);
     // weight shifts over the planted foot; idle: slow sway
-    hips.position.set(-sph * 0.026 * gait + shift * 0.016 * idle, pelvisY, this.pelvisZ);
-    hips.rotation.set(0, pose.hipYaw, sph * 0.05 * gait);
+    hips.position.set(-sph * 0.014 * gait + shift * 0.016 * idle, pelvisY, this.pelvisZ);
+    hips.rotation.set(0, pose.hipYaw, -sph * 0.04 * gait);
 
     const k = 1 - Math.exp(-40 * dt);
     const hipY = pelvisY + this.hipDY;
     // heel strikes toes-up, rolls flat, pushes off toes-down
     const footPitch = (phi: number) => {
-      const u = ((phi % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-      if (u < Math.PI) return 0.07 + 0.38 * Math.cos(u);
-      const st = (u - Math.PI) / Math.PI;
+      const u = ((phi % TAU) + TAU) % TAU, sw = TAU * (1 - D);
+      if (u < sw) return 0.07 + 0.38 * Math.cos((Math.PI * u) / sw);
+      const st = (u - sw) / (TAU - sw);
       return st < 0.2 ? lerp(-0.31, 0, ease(st / 0.2)) : st > 0.7 ? lerp(0, 0.45, ease((st - 0.7) / 0.3)) : 0;
     };
+    // While striding, targets are in the body's frame, not the pelvis's: the hip joint moves as the
+    // pelvis twists and tilts, so take that shift off the target and let the leg undo the rotation.
+    const hipYawNow = hips.rotation.y, hipRollNow = hips.rotation.z;
     const place = (leg: Leg, t: { fz: number; gy: number; lift: number; phi: number }, airZ: number, airY: number) => {
-      const tz = grounded ? t.fz : airZ;
-      const ty = grounded ? t.gy + this.ankle + t.lift - hipY : airY;
+      _a.copy(leg.upper.position).applyQuaternion(hips.quaternion).sub(leg.upper.position);
+      const tz = grounded ? t.fz - _a.z * gait : airZ;
+      const ty = grounded ? t.gy + this.ankle + t.lift - hipY - _a.y * gait : airY;
       leg.tz += (tz - leg.tz) * k;
       leg.ty += (ty - leg.ty) * k;
-      this.solveLeg(leg, grounded ? footPitch(t.phi) * gait * (0.7 + 0.3 * run) * (backward ? 0.3 : 1) : 0.35);
+      this.solveLeg(leg, grounded ? footPitch(t.phi) * gait * (0.7 + 0.3 * run) * lerp(1, 0.3, back) : 0.35, -hipYawNow * gait, -hipRollNow * gait);
     };
     place(legL, L, 0.14, -0.6);
     place(legR, Rr, -0.1, -0.72);
@@ -651,7 +762,7 @@ export class Gladiator {
   }
 
   /** Two-bone IK in the leg's sagittal plane: put the ankle at (tz, ty) from the hip. */
-  private solveLeg(leg: Leg, toePitch: number) {
+  private solveLeg(leg: Leg, toePitch: number, yaw = 0, roll = 0) {
     const T = this.thigh, S = this.shin;
     const full = T + S, soft = 0.95 * full, raw = Math.hypot(leg.tz, leg.ty);
     // approach full extension asymptotically: the knee never snaps straight (that pop reads as jerky)
@@ -661,7 +772,7 @@ export class Gladiator {
     const kneeIn = Math.acos(clamp((T * T + S * S - d * d) / (2 * T * S), -1, 1));
     const hipRot = toTarget - hipIn; // knee forward
     const kneeRot = Math.PI - kneeIn;
-    leg.upper.rotation.set(hipRot, 0, 0);
+    leg.upper.rotation.set(hipRot, yaw, roll);
     leg.lower.rotation.set(kneeRot, 0, 0);
     leg.foot.rotation.set(-(hipRot + kneeRot) + toePitch, 0, 0); // sole stays flat
   }
@@ -734,7 +845,7 @@ export class Gladiator {
   private updateRagdoll(dt: number, c: Controls) {
     const rag = this.rag!;
     this.ragT += dt;
-    for (let i = 0; i < 3; i++) rag.step(dt / 3, this.ground, this.wallR);
+    for (let i = 0; i < 3; i++) rag.step(dt / 3, this.ground, this.confine);
     this.poseFromRagdoll();
 
     const pel = rag.p[PELV];
@@ -742,7 +853,7 @@ export class Gladiator {
     this.vel.set(0, 0, 0);
 
     const wants = c.ragdoll || c.jump || c.moveX !== 0 || c.moveZ !== 0;
-    if ((wants && this.ragT > RAG_MIN_TIME) || this.ragT > RAG_MAX_TIME) this.getUp();
+    if (!this.stayDown && ((wants && this.ragT > RAG_MIN_TIME) || this.ragT > RAG_MAX_TIME)) this.getUp();
   }
 
   /** Drive the rig's joint rotations from particle positions (root is identity here). */
@@ -840,7 +951,6 @@ const READY: Pose = {
 interface Attack {
   time: number; // seconds
   strikeAt: number; // fraction of `time` when the blow lands
-  reach: number; // metres
   /** Forward speed during the attack; t = 0..1, v0 = ground speed when it began. */
   speed: (t: number, v0: number) => number;
   /** [fraction of time, pose]; channels left out fall back to READY. */
@@ -850,10 +960,11 @@ interface Attack {
 const bell = (t: number, a: number, b: number) => (t <= a || t >= b ? 0 : Math.sin((Math.PI * (t - a)) / (b - a)));
 const WALK_ATTACK_SPEED = 0.8, RUN_ATTACK_SPEED = 4.0;
 
-const ATTACKS: Record<'stand' | 'walk' | 'run', Attack> = {
+export type AttackKind = 'stand' | 'walk' | 'run';
+const ATTACKS: Record<AttackKind, Attack> = {
   // Standing: feet planted, flat cut from right to left powered by the hips.
   stand: {
-    time: 0.62, strikeAt: 0.5, reach: 1.75,
+    time: 0.62, strikeAt: 0.5,
     speed: (t) => 0.5 * bell(t, 0.3, 0.6),
     keys: [
       [0.28, { rS: -1.45, rY: -1.25, rO: -0.15, rE: -1.5, rR: -1.3, rW: -0.35, twist: -0.55, hipYaw: -0.5, lean: 0.05, drop: 0.1, lS: -0.9, lE: -0.9, lO: 0.3, fzL: 0.22, fzR: -0.2 }],
@@ -864,7 +975,7 @@ const ATTACKS: Record<'stand' | 'walk' | 'run', Attack> = {
   },
   // Walking: step in on the lead foot and chop down from overhead.
   walk: {
-    time: 0.72, strikeAt: 0.5, reach: 1.9,
+    time: 0.72, strikeAt: 0.5,
     speed: (t) => 2.3 * bell(t, 0.12, 0.6),
     keys: [
       [0.3, { rS: -2.6, rO: -0.45, rE: -1.7, rW: -0.5, twist: -0.4, hipYaw: -0.45, lean: -0.08, drop: 0.05, lS: -1.2, lE: -0.5, lO: 0.15, fzL: 0.05, fzR: -0.22 }],
@@ -875,12 +986,49 @@ const ATTACKS: Record<'stand' | 'walk' | 'run', Attack> = {
   },
   // Running: momentum carries into a long lunge, sword arm driven straight out.
   run: {
-    time: 0.85, strikeAt: 0.46, reach: 2.3,
+    time: 0.85, strikeAt: 0.46,
     speed: (t, v0) => Math.max(v0, 4.5) * (1 - ease(Math.min(1, t / 0.62))),
     keys: [
       [0.17, { rS: 0.55, rO: -0.25, rE: -1.95, rW: 1.0, twist: -0.5, hipYaw: -0.3, lean: 0.3, drop: 0.1, lS: -1.4, lE: -0.25, lO: 0.15, fzL: -0.15, fzR: 0.2 }],
       [0.38, { rS: -1.9, rY: -0.7, rO: 0.05, rE: -0.05, rW: 1.35, twist: 0.6, hipYaw: 0.25, lean: 0.5, drop: 0.3, lS: 0.9, lE: -0.2, lO: 0.4, fzL: -0.55, fzR: 0.6 }],
       [0.7, { rS: -1.8, rY: -0.6, rO: 0.05, rE: -0.15, rW: 1.25, twist: 0.5, hipYaw: 0.2, lean: 0.45, drop: 0.3, lS: 0.8, lE: -0.3, lO: 0.4, fzL: -0.5, fzR: 0.55 }],
+      [1, {}],
+    ],
+  },
+};
+
+/** Bare-handed versions of the same three attacks: quicker, shorter, thrown with the right fist. */
+const PUNCHES: Record<AttackKind, Attack> = {
+  // Standing: a straight right. Fist chambers by the jaw, hips and shoulders turn it out, left hand stays up.
+  stand: {
+    time: 0.44, strikeAt: 0.45,
+    speed: (t) => 2.4 * bell(t, 0.15, 0.55), // a short step in behind it
+    keys: [
+      [0.22, { rS: -0.75, rO: -0.4, rE: -2.15, rW: 0, twist: -0.4, hipYaw: -0.5, lean: 0.06, drop: 0.1, lS: -0.95, lE: -1.9, lO: 0.3, fzL: 0.22, fzR: -0.2 }],
+      [0.46, { rS: -1.75, rO: 0.12, rE: -0.02, rW: 0, twist: 0.8, hipYaw: 0.15, lean: 0.26, drop: 0.12, lS: -0.85, lE: -2.0, lO: 0.35, fzL: 0.32, fzR: -0.22 }],
+      [0.64, { rS: -1.7, rO: 0.12, rE: -0.2, rW: 0, twist: 0.6, hipYaw: 0.05, lean: 0.2, drop: 0.12, lS: -0.85, lE: -2.0, lO: 0.35, fzL: 0.26, fzR: -0.22 }],
+      [1, {}],
+    ],
+  },
+  // Walking: step in behind a looping overhand, elbow high, arm still bent as it comes across.
+  walk: {
+    time: 0.56, strikeAt: 0.5,
+    speed: (t) => 3.0 * bell(t, 0.1, 0.6),
+    keys: [
+      [0.28, { rS: -0.5, rO: -1.0, rE: -1.9, rW: 0, twist: -0.6, hipYaw: -0.5, lean: 0, drop: 0.06, lS: -1.0, lE: -1.8, lO: 0.3, fzL: 0.05, fzR: -0.22 }],
+      [0.52, { rS: -1.7, rO: 0.25, rY: 0.45, rE: -0.45, rW: 0, twist: 0.75, hipYaw: 0.05, lean: 0.32, drop: 0.16, lS: -0.7, lE: -1.9, lO: 0.4, fzL: 0.46, fzR: -0.36 }],
+      [0.72, { rS: -1.25, rO: 0.3, rY: 0.9, rE: -1.0, rW: 0, twist: 0.85, hipYaw: 0.1, lean: 0.36, drop: 0.17, lS: -0.6, lE: -1.8, lO: 0.4, fzL: 0.44, fzR: -0.34 }],
+      [1, {}],
+    ],
+  },
+  // Running: momentum thrown into one long diving right, left arm flung back for balance.
+  run: {
+    time: 0.72, strikeAt: 0.44,
+    speed: (t, v0) => Math.max(v0, 4.5) * (1 - ease(Math.min(1, t / 0.62))),
+    keys: [
+      [0.17, { rS: -0.35, rO: -0.45, rE: -2.1, rW: 0, twist: -0.55, hipYaw: -0.3, lean: 0.3, drop: 0.1, lS: -1.3, lE: -0.6, lO: 0.15, fzL: -0.15, fzR: 0.2 }],
+      [0.4, { rS: -1.62, rO: 0.1, rE: -0.05, rW: 0, twist: 0.75, hipYaw: 0.25, lean: 0.55, drop: 0.28, lS: 0.8, lE: -0.3, lO: 0.4, fzL: -0.55, fzR: 0.6 }],
+      [0.68, { rS: -1.55, rO: 0.1, rE: -0.2, rW: 0, twist: 0.65, hipYaw: 0.2, lean: 0.48, drop: 0.28, lS: 0.7, lE: -0.4, lO: 0.4, fzL: -0.5, fzR: 0.55 }],
       [1, {}],
     ],
   },
@@ -910,6 +1058,7 @@ function samplePose(atk: Attack, t: number): Pose {
 }
 
 // --- fit tuning for props on the body ---
-const FIST_REACH = 0.6; // bare-handed: a punch reaches this fraction of a sword swing
+// a blade only cuts for a short stretch around each attack's strike moment (fractions of the attack)
+const STRIKE_LEAD = 0.16, STRIKE_FOLLOW = 0.1;
 const FIST_CURL = 1.3; // right hand gripping the sword, radians per finger joint
 const GRIP = { x: 0.03, y: -0.09, z: 0.0 }; // sword grip, relative to the right wrist

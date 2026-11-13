@@ -1,4 +1,5 @@
 import { ITEMS, SLOTS, SLOT_LABEL, iconSVG, type Slot } from './items';
+import { ZONES, type Zone } from './hits';
 
 export interface Stack {
   id: string;
@@ -9,6 +10,8 @@ export interface Stack {
 export class Inventory {
   readonly bag: (Stack | null)[];
   readonly equipped = Object.fromEntries(SLOTS.map((s) => [s, null])) as Record<Slot, string | null>;
+  /** Gear is fixed once a match is found: nothing can be put on or taken off. */
+  locked = false;
   /** Called after any change. */
   onChange = () => {};
 
@@ -57,7 +60,7 @@ export class Inventory {
   /** Equip the item in a bag space; whatever it replaces takes that space. */
   equipFromBag(i: number): boolean {
     const s = this.bag[i], slot = s && ITEMS[s.id].slot;
-    if (!s || !slot) return false;
+    if (!s || !slot || this.locked) return false;
     const old = this.equipped[slot];
     this.equipped[slot] = s.id;
     this.bag[i] = old ? { id: old, n: 1 } : null;
@@ -65,15 +68,11 @@ export class Inventory {
     return true;
   }
 
-  /** Total armour points of everything worn. */
-  get armor() {
-    return SLOTS.reduce((sum, s) => sum + ((this.equipped[s] && ITEMS[this.equipped[s]!].armor) || 0), 0);
-  }
-
   /** Move an equipped item back to the bag. The loincloth can be swapped but never simply removed. */
-  unequip(slot: Slot): 'ok' | 'empty' | 'full' | 'locked' {
+  unequip(slot: Slot): 'ok' | 'empty' | 'full' | 'locked' | 'sealed' {
     const id = this.equipped[slot];
     if (!id) return 'empty';
+    if (this.locked) return 'sealed';
     if (slot === 'garb') return 'locked';
     const free = this.bag.indexOf(null);
     if (free < 0) return 'full';
@@ -94,12 +93,12 @@ export interface InventoryUI {
   readonly tab: number;
   render(): void;
   toast(text: string): void;
-  /** Line shown above the hint bar, e.g. "E · Take Gladius"; empty hides it. */
+  /** Line shown above the hint bar; empty hides it. */
   prompt(html: string): void;
 }
 
-/** Inventory panel, pickup prompt and toast messages, built into the HUD. */
-export function createInventoryUI(inv: Inventory, onDrop: (s: Stack) => void): InventoryUI {
+/** Inventory panel, prompt line and toast messages, built into the HUD. */
+export function createInventoryUI(inv: Inventory): InventoryUI {
   const hud = document.getElementById('hud')!;
   const el = (tag: string, cls: string, parent: HTMLElement, text = '') => {
     const e = document.createElement(tag);
@@ -135,7 +134,7 @@ export function createInventoryUI(inv: Inventory, onDrop: (s: Stack) => void): I
   const equipCol = el('div', 'inv-equip', body);
   const bagGrid = el('div', 'inv-bag', body);
   const info = el('div', 'inv-info', invPage);
-  el('div', 'inv-help', invPage, 'Click: equip / take off · Right click: drop · Tab: close');
+  el('div', 'inv-help', invPage, 'Click: equip / take off · Tab: close · Gear is fixed once an opponent is found');
   const promptEl = el('div', 'prompt', hud);
   const toastEl = el('div', 'toast', hud);
 
@@ -147,7 +146,10 @@ export function createInventoryUI(inv: Inventory, onDrop: (s: Stack) => void): I
     }
     const def = ITEMS[id];
     el('b', '', info, def.name);
-    const stats = def.slot === 'weapon' ? ` Reach ×${def.reach} · Force ×${def.power}.` : def.armor ? ` Armour +${def.armor}.` : '';
+    const covers = Object.entries(def.covers ?? {}).map(([z, c]) => `${ZONES[z as Zone].name} ${Math.round(c * 100)}%`);
+    const stats = def.blade
+      ? ` Force ×${def.power} · Blade ${Math.round((def.blade[1] - def.blade[0]) * 100)} cm · ${(def.edge ?? 0) >= 0.8 ? 'Sharp' : 'Blunt'}.`
+      : covers.length ? ` Protects: ${covers.join(', ')}.` : '';
     info.append(` — ${def.desc}${stats}`);
   };
 
@@ -181,6 +183,7 @@ export function createInventoryUI(inv: Inventory, onDrop: (s: Stack) => void): I
       const r = inv.unequip(slot);
       if (r === 'full') toast('Bag is full');
       if (r === 'locked') toast('A slave keeps his cloth on');
+      if (r === 'sealed') toast('Too late to change gear');
     });
     return cell;
   });
@@ -189,14 +192,8 @@ export function createInventoryUI(inv: Inventory, onDrop: (s: Stack) => void): I
     cell.addEventListener('mouseenter', () => describe(inv.bag[i]?.id ?? null));
     cell.addEventListener('click', () => {
       const s = inv.bag[i];
-      if (s && !inv.equipFromBag(i)) toast(`${ITEMS[s.id].name} can't be worn`);
+      if (s && !inv.equipFromBag(i)) toast(inv.locked ? 'Too late to change gear' : `${ITEMS[s.id].name} can't be worn`);
       describe(inv.bag[i]?.id ?? null);
-    });
-    cell.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      const s = inv.take(i);
-      if (s) onDrop(s);
-      describe(null);
     });
     return cell;
   });

@@ -13,13 +13,29 @@
       #rank { position: absolute; left: 28px; top: 20px; }
       #rank .title { font-size: 26px; font-weight: bold; color: #f0c050; }
       #rank .sub { font-size: 13px; opacity: 0.9; }
-      #hint { position: absolute; left: 0; right: 0; bottom: 26px; text-align: center; font-size: 14px;
-        transition: opacity 0.4s; }
-      #hint b, .prompt b { color: #f0c050; }
+      .prompt b { color: #f0c050; }
+      #menu { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(20, 12, 10, 0.55);
+        color: #fff7e6; font-family: 'Trajan Pro', 'Cinzel', Georgia, 'Times New Roman', serif; user-select: none; }
+      #menu[hidden] { display: none; }
+      .menu-box { width: min(420px, calc(100vw - 32px)); padding: 26px 28px 22px; box-sizing: border-box; background: rgba(38, 24, 18, 0.94);
+        border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+      .menu-box h1 { margin: 0 0 18px; text-align: center; font-size: 28px; letter-spacing: 4px; color: #f0c050; text-transform: uppercase; }
+      .menu-actions { display: flex; flex-direction: column; gap: 8px; }
+      .menu-actions button { font: bold 15px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer;
+        padding: 11px; background: rgba(240, 192, 80, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
+      .menu-actions button:hover { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
+      .menu-actions button[hidden] { display: none; }
+      .menu-box h2 { margin: 20px 0 8px; font-size: 13px; letter-spacing: 3px; color: #f0c050; text-transform: uppercase; }
+      .menu-keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font: 13px Georgia, serif; }
+      .menu-keys b { color: #f0c050; text-align: right; font-weight: bold; }
       .prompt, .toast { position: absolute; left: 0; right: 0; text-align: center; opacity: 0; transition: opacity 0.2s; }
       .prompt { bottom: 76px; font-size: 17px; }
       .toast { top: 22%; font-size: 15px; }
       .prompt.show, .toast.show { opacity: 1; }
+      #match { position: absolute; left: 0; right: 0; top: 64px; text-align: center; font-size: 17px; }
+      #match b { color: #f0c050; }
+      #foe { position: absolute; left: 50%; top: 22px; transform: translateX(-50%); text-align: center; font-size: 12px; }
+      #foe .bar { margin-top: 4px; width: 300px; }
       .inv { position: absolute; right: 6%; top: 50%; transform: translateY(-50%); pointer-events: auto; padding: 18px 22px 14px;
         background: rgba(38, 24, 18, 0.88); border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); text-shadow: none; }
       .inv[hidden] { display: none; }
@@ -52,6 +68,8 @@
       .bar i { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.12s linear; }
       .bar span { position: absolute; inset: 0; text-align: center; font: bold 10px/15px Georgia, serif; letter-spacing: 1px; }
       .bar.hp i { background: linear-gradient(#d8483c, #96231f); }
+      .bar.hp.bleeding i { animation: bleed 0.9s ease-in-out infinite; }
+      @keyframes bleed { 50% { filter: brightness(1.6); } }
       .bar.sp { height: 11px; width: 200px; }
       .bar.sp span { display: none; }
       .bar.sp i { background: linear-gradient(#e9c152, #b0861f); }
@@ -74,7 +92,31 @@
   <body>
     <div id="hud">
       <div id="rank"><div class="title">Servus</div><div class="sub">Slave · Wooden sword</div></div>
-      <div id="hint"><b>Click</b> to take control · <b>WASD</b> move · <b>Shift</b> run · <b>Space</b> jump · <b>Left click</b> swing · <b>E</b> take · <b>Tab</b> inventory · <b>C</b> character · <b>G</b> go limp</div>
+      <div id="foe" hidden>Opponent<div class="bar hp"><i></i></div></div>
+      <div id="match"></div>
+    </div>
+    <div id="menu" hidden>
+      <div class="menu-box">
+        <h1>Ad Victorem</h1>
+        <div class="menu-actions">
+          <button data-act="resume">Resume</button>
+          <button data-act="search">Find opponent</button>
+          <button data-act="practice">Practice</button>
+        </div>
+        <h2>Controls</h2>
+        <div class="menu-keys">
+          <b>WASD</b><span>Move</span>
+          <b>Shift</b><span>Run</span>
+          <b>Space</b><span>Jump</span>
+          <b>Left click</b><span>Attack</span>
+          <b>Mouse</b><span>Look</span>
+          <b>Tab</b><span>Inventory</span>
+          <b>C</b><span>Character</span>
+          <b>F</b><span>Find opponent</span>
+          <b>P</b><span>Practice</span>
+          <b>Esc</b><span>Menu</span>
+        </div>
+      </div>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

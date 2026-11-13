@@ -41,7 +41,7 @@ export class Verlet {
     this.sticks.push({ a, b, len, stiff: 1, minOnly: true });
   }
 
-  step(dt: number, ground: (x: number, z: number) => number, wallR: number) {
+  step(dt: number, ground: (x: number, z: number) => number, confine: (p: THREE.Vector3, r: number) => void) {
     const { p, prev, d } = this;
     for (let i = 0; i < p.length; i++) {
       d.copy(p[i]).sub(prev[i]).multiplyScalar(DAMPING);
@@ -64,11 +64,7 @@ export class Verlet {
         const q = p[i], r = this.radius[i];
         const gy = ground(q.x, q.z) + r;
         if (q.y < gy) q.y = gy;
-        const rad = Math.hypot(q.x, q.z), lim = wallR - r;
-        if (rad > lim) {
-          q.x *= lim / rad;
-          q.z *= lim / rad;
-        }
+        confine(q, r);
       }
     }
     // contact response: sand eats bounce and drags sliding parts to a stop
