@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createArena, groundHeight, ceilingAt, confine, site, spawnPoint, R } from './arena';
 import { createPost, BASE_CHROMA } from './post';
-import { loadGladiator } from './gladiator';
+import { loadGladiator, isAttack, MOVE_INFO, MOVE_KINDS, HEAVY_CHARGE_BONUS, type MoveKind } from './gladiator';
 import { ITEMS, SLOTS } from './items';
 import { Inventory, createInventoryUI } from './inventory';
 import { findOpponent, makeCode, cleanCode, cleanName, type Link, type Mode, type Msg, type Search } from './net';
@@ -71,6 +71,14 @@ const ui = createInventoryUI(inventory);
 // --- attributes, health and stamina ---
 const vitals = new Vitals();
 const drawBars = createVitalBars(vitals, document.getElementById('rank')!);
+/** Flash the stamina bar: a press was made with no breath left for it. */
+function flashStamina() {
+  const bar = document.querySelector('.bar.sp');
+  if (!bar) return;
+  bar.classList.remove('empty');
+  void (bar as HTMLElement).offsetWidth; // restart the animation
+  bar.classList.add('empty');
+}
 // armour summary for the character sheet: what each body zone is protected by, all worn pieces together
 const sheet = createCharacterSheet(vitals, () => {
   const parts = ZONE_LIST.map((z) => [ZONES[z].name, Math.round(protection(inventory.equipped, z) * 100)] as const).filter(([, p]) => p > 0);
@@ -99,7 +107,6 @@ type Phase = 'lobby' | 'searching' | 'countdown' | 'fight' | 'over' | 'practice'
 const COUNTDOWN = 4, SEND_HZ = 30, SILENCE_MS = 6000;
 const REMATCH_WINDOW = 20; // seconds after a match in which both must agree to fight again
 const GATE_CLEAR = 3; // metres onto the sand before a gate drops behind its fighter
-const ATTACK_KINDS = ['stand', 'walk', 'run'] as const;
 let phase: Phase = 'lobby', phaseT = 0, bannerT = 0;
 let search: Search | null = null, link: Link | null = null;
 let searchMode: Mode = { kind: 'queue' };
@@ -111,8 +118,10 @@ const remote = {
   p: new THREE.Vector3(), v: new THREE.Vector3(), f: 0, a: 0, mx: 0, mz: 0, bits: 0, hp: 1,
   at: 0, // when it arrived, ms
   dead: false,
-  attack: null as { k: (typeof ATTACK_KINDS)[number]; f: number; aim: number } | null,
-  jump: false,
+  attack: null as { k: MoveKind; f: number; aim: number; d: number } | null,
+  /** Their heavy blow is still charging (no release heard yet). */
+  charging: false,
+  released: false,
 };
 const matchEl = document.getElementById('match')!;
 const foeBar = document.getElementById('foe')!, foeFill = foeBar.querySelector('i')!, foeTitle = foeBar.querySelector('.foe-title')!;
@@ -205,7 +214,8 @@ function beginMatch() {
   remote.dead = false;
   remote.at = performance.now();
   remote.attack = null;
-  remote.jump = false;
+  remote.charging = remote.released = false;
+  riposteUntil = 0;
   foeGateShut = false;
   foe.root.visible = true;
 }
@@ -234,23 +244,74 @@ function onMessage(m: Msg) {
       remote.at = performance.now();
       break;
     case 'atk':
-      if (ATTACK_KINDS.includes(m.k)) remote.attack = { k: m.k, f: num(m.f), aim: num(m.aim, -1, 1) };
+      if (MOVE_KINDS.includes(m.k)) remote.attack = { k: m.k, f: num(m.f), aim: num(m.aim, -1, 1), d: num(m.d) };
       break;
-    case 'jump':
-      remote.jump = true;
+    case 'rel':
+      remote.released = true;
+      break;
+    case 'parried':
+      // our blow was turned aside: we reel, wide open
+      if (phase !== 'fight' || vitals.dead) break;
+      player.forceMove('parried');
+      ui.toast('Parried!');
+      impact(0.09, 0.5);
+      break;
+    case 'blocked':
+      if (phase !== 'fight' || vitals.dead) break;
+      if (player.attacking && player.currentMove !== 'heavy') player.forceMove('recoil'); // heavies push through a guard
+      impact(0.05, 0.25);
       break;
     case 'hit': {
       if (phase !== 'fight' || vitals.dead || !ZONE_LIST.includes(m.zone)) break;
+      // Our own machine has the last word on our defence: what we see is what counts for dodging,
+      // parrying and blocking, so a dodge that looked clean on our screen is clean.
+      if (player.invulnerable) break;
+      const x = num(m.x, -1, 1), z = num(m.z, -1, 1);
+      const d = num(m.d, 0, 200), poise = num(m.poise, 0, 200);
+      // the blow comes along (x, z): it is in front of us if that runs against our facing
+      const front = -(Math.sin(player.facing) * x + Math.cos(player.facing) * z) > FRONT_COS;
+      if (front && player.parrying) {
+        link.send({ t: 'parried' });
+        riposteUntil = performance.now() + RIPOSTE_MS;
+        ui.toast('Parried · strike now!');
+        impact(0.1, 0.4);
+        break;
+      }
+      if (front && player.blocking) {
+        const cost = d * BLOCK_STAMINA;
+        if (vitals.stamina >= cost) {
+          vitals.spend(cost);
+          vitals.hurt(d * BLOCK_CHIP);
+          link.send({ t: 'blocked' });
+          player.vel.x += x * 1.5;
+          player.vel.z += z * 1.5;
+          impact(0.05, 0.3);
+          if (vitals.dead) die();
+          break;
+        }
+        // not enough breath to hold it: the guard is battered down and half the blow gets through
+        vitals.spend(vitals.stamina);
+        vitals.hurt(d * 0.5);
+        player.forceMove('guardbreak');
+        ui.toast('Guard broken!');
+        impact(0.08, 0.6);
+        if (vitals.dead) die();
+        break;
+      }
       // armour on the struck place turns away part of the blow, and keeps the edge out of the flesh
       const prot = protection(inventory.equipped, m.zone);
-      const through = num(m.d, 0, 100) * (1 - prot);
+      const through = d * (1 - prot);
       const bleed = through * ZONES[m.zone].bleed * num(m.edge, 0, 1) * (1 - prot);
       vitals.hurt(through, bleed);
       ui.toast(`Struck in the ${ZONES[m.zone].name}${prot >= 0.5 ? ' · the armour held' : bleed >= 0.5 ? ' · bleeding' : ''}`);
       chromaPulse = 0.035;
-      const x = num(m.x, -1, 1), z = num(m.z, -1, 1);
-      player.vel.x += x * 3; // knocked back along the blow
-      player.vel.z += z * 3;
+      impact(0.07, 0.5);
+      // battered past our poise: stagger (cutting short whatever we were doing); otherwise a shove
+      if (vitals.batter(poise * (1 - prot * 0.5)) && !player.exposed) player.forceMove('stagger', player.facing, 0);
+      else {
+        player.vel.x += x * 2;
+        player.vel.z += z * 2;
+      }
       if (vitals.dead) die();
       break;
     }
@@ -434,12 +495,12 @@ function updateMatch(dt: number) {
 }
 
 /** Tell the opponent where we are. `still` = report standing at rest (the tab is in the background and nothing is moving). */
-function sendState(move: { x: number; z: number }, sprint: boolean, backpedal: boolean, still = false) {
+function sendState(move: { x: number; z: number }, free: boolean, backpedal: boolean, still = false) {
   if (!link || phase === 'lobby' || phase === 'searching' || phase === 'practice') return;
   const p = player.pos, v = still ? ZERO : player.vel;
   link.send({
     t: 's', p: [p.x, p.y, p.z], v: [v.x, v.y, v.z], f: player.facing, a: yaw + Math.PI, m: [move.x, move.z],
-    b: (sprint ? 1 : 0) | (backpedal ? 2 : 0) | (player.ragdolled ? 4 : 0), hp: vitals.health / vitals.maxHealth,
+    b: (free ? 1 : 0) | (backpedal ? 2 : 0) | (player.ragdolled ? 4 : 0) | (blockHeld ? 8 : 0), hp: vitals.health / vitals.maxHealth,
   });
 }
 const ZERO = new THREE.Vector3();
@@ -460,11 +521,11 @@ window.setInterval(() => {
 }, 250);
 
 /** Move the opponent's body: replay their inputs through the same character code, pulled toward where they say they are. */
-function updateFoe(dt: number, move: { x: number; z: number }, sprint: boolean, backpedal: boolean) {
+function updateFoe(dt: number, move: { x: number; z: number }, free: boolean, backpedal: boolean) {
   sendT -= dt;
   if (sendT <= 0) {
     sendT = 1 / SEND_HZ;
-    sendState(move, sprint, backpedal);
+    sendState(move, free, backpedal);
   }
   if (!foe.root.visible) return;
   const limp = remote.dead || (remote.bits & 4) !== 0; // a dead opponent drops whether or not their own screen has caught up
@@ -476,14 +537,17 @@ function updateFoe(dt: number, move: { x: number; z: number }, sprint: boolean, 
     foe.pos.z += dz * k;
   }
   foe.stayDown = limp;
-  if (remote.attack) foe.forceAttack(remote.attack.k, remote.attack.f, remote.attack.aim);
+  if (remote.attack) foe.forceMove(remote.attack.k, remote.attack.f, remote.attack.aim, remote.attack.d);
+  if (remote.released) foe.releaseCharge();
   remote.attack = null;
+  remote.released = false;
   foe.update(dt, {
-    moveX: remote.mx, moveZ: remote.mz, sprint: (remote.bits & 1) !== 0, backpedal: (remote.bits & 2) !== 0,
-    jump: remote.jump, attack: false, ragdoll: limp !== foe.ragdolled, aimYaw: remote.a, aim: 0,
-    threat: foe.pos.distanceTo(player.pos),
+    moveX: remote.mx, moveZ: remote.mz, free: (remote.bits & 1) !== 0, backpedal: (remote.bits & 2) !== 0,
+    attack: false, block: (remote.bits & 8) !== 0, ragdoll: limp !== foe.ragdolled, aimYaw: remote.a, aim: 0,
+    threat: foe.pos.distanceTo(player.pos), target: player.pos,
   });
-  remote.jump = false;
+  foe.started.length = 0;
+  foe.released = false;
 }
 
 // --- landing blows: the blade (or fist) must actually pass through a body part or prop while the swing is live ---
@@ -492,6 +556,20 @@ const STRIKE_SUBSTEPS = 4; // fast swings travel far between frames: test the sw
 const bladeA = new THREE.Vector3(), bladeB = new THREE.Vector3(), prevA = new THREE.Vector3(), prevB = new THREE.Vector3();
 const segA = new THREE.Vector3(), segB = new THREE.Vector3(), swingDir = new THREE.Vector3();
 let swingSeen = -1, wasStriking = false, foeStruck = false;
+/** Until when (ms) our parry has the opponent reeling: the next blow that lands is a riposte. */
+let riposteUntil = 0;
+const RIPOSTE_MS = 1300, RIPOSTE_MULT = 3;
+// defending: a blow counts as from the front within about 70° of where we face
+const FRONT_COS = 0.35;
+// a blow taken on the guard costs this much stamina per point of damage, and still lets this share through
+const BLOCK_STAMINA = 2.2, BLOCK_CHIP = 0.12;
+
+// --- impact feel: a brief freeze on contact (hitstop) and a jolt of the camera ---
+let hitstop = 0, shake = 0;
+function impact(stop: number, jolt: number) {
+  hitstop = Math.max(hitstop, stop);
+  shake = Math.max(shake, jolt);
+}
 const propsStruck = new Set<object>();
 /** Each frame: sweep the weapon from where it was to where it is, and see what it cut through. One hit on the opponent per swing. */
 function resolveStrike() {
@@ -511,7 +589,9 @@ function resolveStrike() {
   }
   wasStriking = true;
   const w = inventory.equipped.weapon, def = w ? ITEMS[w] : null;
-  const power = (def?.power ?? 0.5) * vitals.power;
+  const kind = player.currentMove, info = MOVE_INFO[kind];
+  const charge = kind === 'heavy' ? 1 + player.charge * HEAVY_CHARGE_BONUS : 1;
+  const power = (def?.power ?? 0.5) * vitals.power * info.dmg * charge;
   swingDir.set(Math.sin(player.facing), 0, Math.cos(player.facing));
   // the attacker's own view decides whether a blow lands; the victim's machine applies armour, damage and bleeding
   const parts = !foeStruck && phase === 'fight' && link && remote.hp > 0 ? foe.bodyParts() : null;
@@ -523,8 +603,13 @@ function resolveStrike() {
     const zone = parts && !foeStruck ? touchedPart(parts, segA, segB, wr) : null;
     if (zone) {
       foeStruck = true;
-      link!.send({ t: 'hit', zone, d: BASE_DAMAGE * power * ZONES[zone].damage, edge: def?.edge ?? 0, x: swingDir.x, z: swingDir.z });
-      ui.toast(`You struck the ${ZONES[zone].name}`);
+      // a blow on an opponent reeling from our parry is a riposte: it lands far harder
+      const riposte = performance.now() < riposteUntil;
+      if (riposte) riposteUntil = 0;
+      const crit = riposte ? RIPOSTE_MULT : 1;
+      link!.send({ t: 'hit', zone, d: BASE_DAMAGE * power * ZONES[zone].damage * crit, edge: def?.edge ?? 0, x: swingDir.x, z: swingDir.z, poise: info.poise * crit });
+      ui.toast(riposte ? `Riposte to the ${ZONES[zone].name}!` : `You struck the ${ZONES[zone].name}`);
+      impact(riposte ? 0.12 : kind === 'heavy' ? 0.09 : 0.06, riposte ? 0.6 : 0.3);
       hits++;
     }
   }
@@ -545,7 +630,10 @@ resize();
 
 // --- input ---
 const keys = new Set<string>();
-let locked = false, yaw = 0, pitch = REST_PITCH, attackQueued = false;
+let locked = false, yaw = 0, pitch = REST_PITCH;
+// presses since the last frame (the fighter buffers them, so an early press still lands), and what is held
+const pressed = { attack: false, dodge: false, parry: false };
+let mouseHeld = false, blockHeld = false;
 const canvas = renderer.domElement;
 // Pause menu: shown whenever the mouse is free and the inventory isn't, so Esc (which the browser
 // spends on releasing pointer lock) brings it up. The site opens straight onto the game: click to take control.
@@ -627,7 +715,10 @@ canvas.addEventListener('click', () => {
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === canvas;
   setMenu(!locked && !ui.open && phase !== 'over'); // after a bout the result panel takes the mouse instead
-  if (!locked) keys.clear();
+  if (!locked) {
+    keys.clear();
+    mouseHeld = false;
+  }
 });
 document.addEventListener('mousemove', (e) => {
   if (!locked) return;
@@ -635,7 +726,13 @@ document.addEventListener('mousemove', (e) => {
   pitch = THREE.MathUtils.clamp(pitch - e.movementY * SENS, -1.1, 0.45);
 });
 document.addEventListener('mousedown', (e) => {
-  if (locked && e.button === 0) attackQueued = true;
+  if (locked && e.button === 0) {
+    pressed.attack = true;
+    mouseHeld = true;
+  }
+});
+document.addEventListener('mouseup', (e) => {
+  if (e.button === 0) mouseHeld = false;
 });
 document.addEventListener('keydown', (e) => {
   // typing a friend's code: keys are text, not controls (Enter joins)
@@ -683,7 +780,11 @@ document.addEventListener('keydown', (e) => {
   }
   if (!locked) return;
   keys.add(e.code);
-  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Space') {
+    e.preventDefault();
+    if (!e.repeat) pressed.dodge = true;
+  }
+  if (e.code === 'KeyQ' && !e.repeat) pressed.parry = true;
 });
 document.addEventListener('keyup', (e) => keys.delete(e.code));
 
@@ -724,52 +825,73 @@ function updateCamera(dt: number) {
   // keep the camera inside the arena bowl and above the sand
   confine(p, 0.35);
   p.y = Math.max(groundHeight(p.x, p.z) + 0.3, Math.min(p.y, ceilingAt(p.x, p.z) - 0.25));
-  camera.rotation.set(pitch, yaw, 0);
+  // a blow landing jolts the view
+  shake *= Math.exp(-14 * dt);
+  const j = shake * 0.018;
+  camera.rotation.set(pitch + (Math.random() - 0.5) * j, yaw + (Math.random() - 0.5) * j, 0);
 
   const ground = groundHeight(player.pos.x, player.pos.z);
   blob.position.set(player.pos.x, ground + 0.04, player.pos.z);
   blob.material.opacity = THREE.MathUtils.clamp(1 - (player.pos.y - ground) * 0.7, 0, 1);
 }
 
+const postAt = new THREE.Vector3();
 function update(dt: number) {
   const f = (keys.has('KeyW') ? 1 : 0) - (keys.has('KeyS') ? 1 : 0);
   const s = (keys.has('KeyD') ? 1 : 0) - (keys.has('KeyA') ? 1 : 0);
   const len = Math.hypot(f, s) || 1;
   const sin = Math.sin(yaw), cos = Math.cos(yaw);
-  // stamina gates effort: no sprint when winded, no swing or jump without the breath for it
-  const sprint = keys.has('ShiftLeft') && vitals.canSprint;
+  // stamina gates effort: no swing, dodge or parry without the breath for it
+  blockHeld = keys.has('KeyE') && !player.ragdolled;
+  // Shift: face where you walk, instead of squaring up to a nearby enemy
+  const free = keys.has('ShiftLeft') || keys.has('ShiftRight');
   const move = { x: (-sin * f + cos * s) / len, z: (-cos * f - sin * s) / len };
-  const backpedal = f < 0 && !keys.has('ShiftLeft'); // S without Shift: back up, still facing forward
+  const backpedal = f < 0 && !free; // S without Shift: back up, still facing forward
   const foeNear = foe.root.visible ? foe.pos.distanceTo(player.pos) : Infinity;
-  const wasAttacking = player.attacking, wasGrounded = player.grounded;
+  // out of breath: say so plainly instead of silently ignoring the press (the press stays buffered a moment)
+  if ((pressed.attack || pressed.dodge || pressed.parry) && !vitals.canAct) flashStamina();
+  // hitstop: everything on the sand freezes for a few hundredths of a second when a blow connects
+  const sdt = hitstop > 0 ? dt * 0.06 : dt;
+  hitstop = Math.max(0, hitstop - dt);
+  // the nearest enemy: the opponent, or in practice the nearest training post
+  const foeTarget = foe.root.visible && !foe.ragdolled && link ? foe.pos : null;
+  const nearPost = arena.nearestEnemy(player.pos, postAt);
+  const target = foeTarget && (!nearPost || foeNear <= nearPost.distanceTo(player.pos)) ? foeTarget : nearPost;
   player.speedMul = vitals.speed;
-  player.update(dt, {
+  player.update(sdt, {
     moveX: move.x,
     moveZ: move.z,
-    sprint,
+    free,
     backpedal,
-    jump: keys.has('Space') && vitals.canJump,
-    attack: attackQueued && vitals.canAttack,
+    attack: pressed.attack,
+    attackHeld: mouseHeld,
+    dodge: pressed.dodge,
+    parry: pressed.parry,
+    block: blockHeld,
+    canAct: vitals.canAct,
+    target,
     ragdoll: false, // going limp is not a choice: only death drops you
     aimYaw: yaw + Math.PI, // camera looks down -Z at yaw 0; model faces +Z at 0
     aim: aimFromView(),
     threat: Math.min(arena.enemyDistance(player.pos), foeNear),
   });
-  if (!wasAttacking && player.attacking) {
-    vitals.attacked();
-    link?.send({ t: 'atk', k: player.attackKind, f: player.facing, aim: aimFromView() });
+  // pay for and announce every move started this frame (including reactions forced by a blow)
+  for (const k of player.started) {
+    vitals.spend(MOVE_INFO[k].cost);
+    link?.send({ t: 'atk', k, f: player.facing, aim: isAttack(k) ? aimFromView() : 0, d: player.dodgeDir });
   }
-  if (wasGrounded && !player.grounded && player.vel.y > 2 && !player.ragdolled) {
-    vitals.jumped();
-    link?.send({ t: 'jump' });
+  player.started.length = 0;
+  if (player.released) {
+    player.released = false;
+    link?.send({ t: 'rel' });
   }
-  vitals.update(dt, sprint && player.grounded && Math.hypot(player.vel.x, player.vel.z) > 2.4);
+  vitals.update(dt, player.blocking);
   if (vitals.dead) die(); // bled out
   drawBars();
   if (ui.open && ui.tab === SHEET_TAB) sheet.render();
-  attackQueued = false;
+  pressed.attack = pressed.dodge = pressed.parry = false;
   updateMatch(dt);
-  updateFoe(dt, move, sprint, backpedal);
+  updateFoe(sdt, move, free, backpedal);
   // two bodies can't share the same patch of sand: step out of the opponent
   if (foe.root.visible && !foe.ragdolled && !player.ragdolled) {
     const dx = player.pos.x - foe.pos.x, dz = player.pos.z - foe.pos.z, d = Math.hypot(dx, dz), min = player.radius + foe.radius;

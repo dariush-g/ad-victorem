@@ -22,7 +22,8 @@ export const ZONES: Record<Zone, { name: string; damage: number; bleed: number }
   leg: { name: 'leg', damage: 0.6, bleed: 0.02 },
 };
 
-export const BASE_DAMAGE = 22;
+// tuned so a fight takes many clean blows: about 7-8 gladius cuts to an unarmoured torso
+export const BASE_DAMAGE = 8;
 const MAX_PROTECTION = 0.9;
 
 /** Share of a blow to `zone` that the worn gear turns away (layers stack: 1 - Π(1 - cover)). */

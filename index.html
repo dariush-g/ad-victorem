@@ -100,6 +100,9 @@
       .bar.sp span { display: none; }
       .bar.sp i { background: linear-gradient(#e9c152, #b0861f); }
       .bar.sp.winded i { background: linear-gradient(#9a8a66, #6b5f45); }
+      .bar.sp.empty { animation: sp-empty 0.45s ease-out; }
+      @keyframes sp-empty { 0%, 40% { box-shadow: 0 0 0 2px #e0503c, 0 0 10px #e0503c; transform: translateX(-3px); }
+        20%, 60% { transform: translateX(3px); } 100% { transform: none; } }
       .inv-body { display: flex; gap: 22px; }
       .inv-equip { display: grid; grid-template-columns: repeat(2, 64px); gap: 6px 8px; align-content: start; }
       .inv-slot { display: flex; flex-direction: column; align-items: center; gap: 3px; font: 10px Georgia, serif; letter-spacing: 0.5px; }
@@ -150,9 +153,12 @@
         <h2>Controls</h2>
         <div class="menu-keys">
           <b>WASD</b><span>Move</span>
-          <b>Shift</b><span>Run</span>
-          <b>Space</b><span>Jump</span>
-          <b>Left click</b><span>Attack</span>
+          <b>Shift</b><span>Face where you walk</span>
+          <b>Left click</b><span>Attack (click again to combo)</span>
+          <b>Hold click</b><span>Heavy attack (hold to charge)</span>
+          <b>Space</b><span>Roll (S or no direction: roll back)</span>
+          <b>Hold E</b><span>Block</span>
+          <b>Q</b><span>Parry</span>
           <b>Mouse</b><span>Look</span>
           <b>Tab</b><span>Inventory</span>
           <b>C</b><span>Character</span>

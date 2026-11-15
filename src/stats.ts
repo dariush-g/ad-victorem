@@ -4,9 +4,11 @@ export const STAT_MAX = 10;
 
 // --- tuning ---
 const BASE = 1; // starting level: every formula is neutral here
-const SPRINT_DRAIN = 14, ATTACK_COST = 14, JUMP_COST = 10; // stamina; sprint is per second
-const STAMINA_REGEN = 22, STAMINA_DELAY = 0.8; // per second, after this long without effort
-const SECOND_WIND = 25; // once spent, stamina must recover to this before sprinting again
+const STAMINA_REGEN = 30, STAMINA_DELAY = 0.7; // per second, after this long without effort
+const EMPTY_DELAY = 1.3; // ran the pool dry: the wait before it refills is longer
+const GUARD_REGEN = 0.35; // share of the refill rate while holding the guard up
+const POISE = 30, POISE_DELAY = 2.5; // how much battering it takes to stagger you; it comes back all at once after this long unhit
+const SECOND_WIND = 25; // once spent, the bar shows winded until stamina is back to this
 const HEALTH_REGEN = 1, HEALTH_DELAY = 5;
 const CLOT_HALF_LIFE = 12; // seconds for a wound to bleed half as fast
 const STOPPED = 0.05; // hp/s below which a wound has closed
@@ -21,10 +23,13 @@ export class Vitals {
   stamina: number;
   /** Open wounds, each bleeding this many health points per second and slowly clotting. */
   private wounds: number[] = [];
-  /** Ran dry: no sprinting until a second wind. */
+  /** Ran dry, and not yet back to a second wind (the bar shows it). */
   winded = false;
   private sinceEffort = 99;
   private sinceHurt = 99;
+  /** Battering left before a blow staggers you. */
+  poise = POISE;
+  private sinceBattered = 99;
 
   constructor() {
     this.health = this.maxHealth;
@@ -52,26 +57,28 @@ export class Vitals {
   get dead() {
     return this.health <= 0;
   }
-  get canSprint() {
-    return !this.winded && this.stamina > 0;
-  }
-  get canAttack() {
-    return this.stamina >= ATTACK_COST;
-  }
-  get canJump() {
-    return this.stamina >= JUMP_COST;
+  /** Any breath left at all lets you swing, dodge or parry: the move can take you down to zero. */
+  get canAct() {
+    return this.stamina > 0;
   }
 
-  private spend(n: number) {
+  /** Use up `n` stamina (an attack, dodge, parry, or a blow taken on the guard). */
+  spend(n: number) {
+    if (n <= 0) return;
     this.stamina = Math.max(0, this.stamina - n);
     this.sinceEffort = 0;
-    if (this.stamina === 0) this.winded = true;
+    if (this.stamina === 0) {
+      this.winded = true;
+      this.sinceEffort = STAMINA_DELAY - EMPTY_DELAY;
+    }
   }
-  attacked() {
-    this.spend(ATTACK_COST);
-  }
-  jumped() {
-    this.spend(JUMP_COST);
+  /** Take `n` poise damage; true if that breaks it (stagger), which also resets it. */
+  batter(n: number) {
+    this.sinceBattered = 0;
+    this.poise -= n;
+    if (this.poise > 0) return false;
+    this.poise = POISE;
+    return true;
   }
 
   /** Take `n` damage (armour already accounted for), opening a wound that bleeds `bleed` health per second. */
@@ -86,16 +93,19 @@ export class Vitals {
     this.health = this.maxHealth;
     this.stamina = this.maxStamina;
     this.winded = false;
+    this.poise = POISE;
   }
   heal(n: number) {
     this.health = Math.min(this.maxHealth, this.health + n);
   }
 
-  update(dt: number, sprinting: boolean) {
-    if (sprinting) this.spend(SPRINT_DRAIN * dt);
+  update(dt: number, guarding = false) {
     this.sinceEffort += dt;
     this.sinceHurt += dt;
-    if (this.sinceEffort > STAMINA_DELAY) this.stamina = Math.min(this.maxStamina, this.stamina + STAMINA_REGEN * dt);
+    this.sinceBattered += dt;
+    if (this.sinceBattered > POISE_DELAY) this.poise = POISE;
+    const regen = STAMINA_REGEN * (guarding ? GUARD_REGEN : 1);
+    if (this.sinceEffort > STAMINA_DELAY) this.stamina = Math.min(this.maxStamina, this.stamina + regen * dt);
     if (this.winded && this.stamina >= SECOND_WIND) this.winded = false;
     if (this.wounds.length) {
       if (!this.dead) this.health = Math.max(0, this.health - this.bleeding * dt);

@@ -1,5 +1,5 @@
 import { Peer, type DataConnection } from 'peerjs';
-import type { AttackKind } from './gladiator';
+import type { MoveKind } from './gladiator';
 import type { Zone } from './hits';
 
 /**
@@ -45,10 +45,16 @@ export type Msg =
   | { t: 'gear'; gear: Record<string, string | null>; name?: string }
   /** Fighter state, sent many times a second: position, velocity, facing, aim, move direction, flag bits, health 0..1. */
   | { t: 's'; p: number[]; v: number[]; f: number; a: number; m: number[]; b: number; hp: number }
-  | { t: 'atk'; k: AttackKind; f: number; aim: number }
-  | { t: 'jump' }
+  /** Started a move (attack, dodge, parry, or reeling from a blow): its kind, facing, aim height, and a dodge's direction. */
+  | { t: 'atk'; k: MoveKind; f: number; aim: number; d: number }
+  /** Let go of a charging heavy blow. */
+  | { t: 'rel' }
   /** A blow landed on `zone`: raw damage before the victim's armour, how sharp the weapon is, and the push direction. */
-  | { t: 'hit'; zone: Zone; d: number; edge: number; x: number; z: number }
+  | { t: 'hit'; zone: Zone; d: number; edge: number; x: number; z: number; poise: number }
+  /** Your blow was turned aside by a parry: reel, open to a riposte. */
+  | { t: 'parried' }
+  /** Your blow landed on a raised guard and bounced off. */
+  | { t: 'blocked' }
   | { t: 'dead' }
   /** Wants to fight again on the same connection. */
   | { t: 'rematch' }

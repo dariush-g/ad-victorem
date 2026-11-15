@@ -555,7 +555,21 @@ export function createArena(scene: THREE.Scene) {
     return best;
   }
 
-  return { update, touch, enemyDistance, setGate, gateOpen, setPractice };
+  /** The nearest enemy's position (written into `out`), or null if there is none. Placeholder: the training posts. */
+  function nearestEnemy(pos: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 | null {
+    let best = Infinity, found = false;
+    for (const p of posts()) {
+      const d = Math.hypot(p.x - pos.x, p.z - pos.z);
+      if (d < best) {
+        best = d;
+        out.set(p.x, pos.y, p.z);
+        found = true;
+      }
+    }
+    return found ? out : null;
+  }
+
+  return { update, touch, enemyDistance, nearestEnemy, setGate, gateOpen, setPractice };
 }
 
 /** Sand surface height: low dunes, scuffed hollows, drift piled against the wall. */
