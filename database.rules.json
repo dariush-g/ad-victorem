@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "relay": {
+      "$key": {
+        ".read": "$key.matches(/^[0-9a-f-]{36}$/)",
+        "$side": {
+          ".write": "$key.matches(/^[0-9a-f-]{36}$/) && ($side === 'h' || $side === 'g')",
+          "on": { ".validate": "newData.val() === true" },
+          "s": { ".validate": "newData.isString() && newData.val().length < 2000" },
+          "q": { "$m": { ".validate": "newData.isString() && newData.val().length < 2000" } },
+          "$other": { ".validate": false }
+        }
+      }
+    }
+  }
+}

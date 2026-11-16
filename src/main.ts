@@ -104,7 +104,7 @@ for (const id of ['gladius', 'balteus', 'subligaculum_red', 'tunica', 'tunica_ru
 
 // --- the duel: find an opponent from the room, gates rise, fight, back to the room ---
 type Phase = 'lobby' | 'searching' | 'countdown' | 'fight' | 'over' | 'practice';
-const COUNTDOWN = 4, SEND_HZ = 30, SILENCE_MS = 6000;
+const COUNTDOWN = 4, SEND_HZ = 30;
 const REMATCH_WINDOW = 20; // seconds after a match in which both must agree to fight again
 const GATE_CLEAR = 3; // metres onto the sand before a gate drops behind its fighter
 let phase: Phase = 'lobby', phaseT = 0, bannerT = 0;
@@ -163,7 +163,13 @@ function startSearch(mode: Mode) {
       search = null;
       phase = 'lobby';
       if (why === 'taken' && mode.kind === 'host') return startSearch({ kind: 'host', code: makeCode() }); // unlucky: someone has that code
-      ui.toast(why === 'missing' && mode.kind === 'join' ? `Nobody is waiting with code ${mode.code}` : 'Could not connect');
+      ui.toast(
+        why === 'missing' && mode.kind === 'join'
+          ? `Nobody is waiting with code ${mode.code}`
+          : why === 'unreachable'
+            ? 'Could not reach the duel server'
+            : 'Could not connect',
+      );
       if (!menu.hidden) setMenu(true);
     },
   });
@@ -477,10 +483,6 @@ function updateMatch(dt: number) {
       foeGateShut = true;
       arena.setGate(site.side === 1 ? -1 : 1, false);
     }
-    if (now - remote.at > SILENCE_MS) {
-      search?.close();
-      onLost();
-    }
   } else if (phase === 'over') {
     // the rematch offer lapses: nobody is left waiting on a player who won't answer
     if (!rematch.closed && (phaseT -= dt) <= 0) {
@@ -505,8 +507,8 @@ function sendState(move: { x: number; z: number }, free: boolean, backpedal: boo
 }
 const ZERO = new THREE.Vector3();
 
-// A hidden tab gets no animation frames, which would look to the opponent like a dropped connection.
-// Timers still run there (about once a second), so they keep the match clock and the heartbeat going.
+// A hidden tab gets no animation frames. Timers still run there (about once a second, slower after a
+// while), so they keep the match clock and our fighter's state going. Staying connected is net.ts's job.
 let hiddenLast = 0;
 document.addEventListener('visibilitychange', () => void (hiddenLast = performance.now()));
 window.setInterval(() => {

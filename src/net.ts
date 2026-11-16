@@ -1,18 +1,22 @@
-import { Peer, type DataConnection } from 'peerjs';
 import type { MoveKind } from './gladiator';
 import type { Zone } from './hits';
 
 /**
- * One-on-one matchmaking and messaging, peer to peer over WebRTC.
+ * One-on-one matchmaking and messaging through the duel server (server/server.ts).
  *
- * There is no game server. Players meet through well-known ids on the public PeerJS broker:
- *  - the open queue: one shared id. Whoever claims it waits there as host; whoever finds it
- *    taken dials it as guest. Once paired the host lets go of the id for the next pair.
- *  - friend codes: the host claims an id made from a short code and waits; the friend dials it.
- * After pairing the broker is out of the picture and everything travels over the data channel.
+ * The server pairs players (the open queue, or a friend by code) and forwards what each says to
+ * the other. It does not run the fight: each side stays the authority over its own fighter.
+ *
+ * Two connections to the server:
+ *  - a WebSocket (TCP): matchmaking, WebRTC signalling, and every game event, in order;
+ *  - a WebRTC data channel the server offers, unordered and never retransmitted (SCTP over DTLS over
+ *    UDP): the fighter state sent many times a second, where only the newest matters. If it never
+ *    opens (UDP blocked on this network), state goes over the WebSocket too.
  */
-const QUEUE_ID = 'ad-victorem-v1-duel-queue';
-const ROOM_PREFIX = 'ad-victorem-v1-room-';
+const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? `ws://${location.hostname || 'localhost'}:8080`;
+
+/** For the browser's side of the data channel. The server has a public address, so STUN is only a help. */
+const RTC_CONFIG: RTCConfiguration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
 /** Friend codes: 5 characters with no look-alikes (no 0/O, 1/I/L). */
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -37,8 +41,8 @@ export function cleanName(text: unknown): string {
 
 /** How to find the opponent: anyone in the open queue, or a friend by code (as the one who made it, or the one joining). */
 export type Mode = { kind: 'queue' } | { kind: 'host'; code: string } | { kind: 'join'; code: string };
-/** Why a search gave up: the code is already in use (host should pick another), or nobody is waiting on it. */
-export type Failure = 'taken' | 'missing';
+/** Why a search gave up: the code is already in use (host should pick another), nobody is waiting on it, or the server could not be reached. */
+export type Failure = 'taken' | 'missing' | 'unreachable';
 
 export type Msg =
   /** Sent once on pairing: the fighter's name and what they wear. */
@@ -72,112 +76,169 @@ export interface Search {
   close(graceMs?: number): void;
 }
 
+/**
+ * Keep-alive: a ping to the server every second, and a link that has heard nothing at all for
+ * `SILENT_MS` is treated as dropped. Pausing (a hidden tab, a minimised window) stops the game
+ * loop but not the pings, so a paused player stays in the match. A closed tab is noticed at once
+ * through the server; this only catches connections that die quietly.
+ */
+const PING_MS = 1000, SILENT_MS = 20000;
+
+/**
+ * A once-a-second tick that keeps going in a background tab. Browsers slow page timers in hidden
+ * tabs to once a minute after a while; timers inside a worker are left alone.
+ */
+function ticker(tick: () => void): () => void {
+  try {
+    const url = URL.createObjectURL(new Blob([`setInterval(() => postMessage(0), ${PING_MS});`], { type: 'text/javascript' }));
+    const worker = new Worker(url);
+    URL.revokeObjectURL(url);
+    worker.onmessage = tick;
+    return () => worker.terminate();
+  } catch {
+    const id = window.setInterval(tick, PING_MS);
+    return () => clearInterval(id);
+  }
+}
+
+type Frame = { op?: unknown; [k: string]: unknown };
+
 export function findOpponent(mode: Mode, on: { found(link: Link): void; message(m: Msg): void; lost(): void; failed(why: Failure): void }): Search {
-  let peer: Peer | null = null, conn: DataConnection | null = null;
-  let closed = false, matched = false, timer = 0;
+  let closed = false, matched = false;
+  let heard = performance.now();
+  let pc: RTCPeerConnection | null = null, dc: RTCDataChannel | null = null;
+  /** State numbering: the data channel may deliver out of order, so older states are dropped. */
+  let sentN = 0, seenN = -1;
+  /** Signalling steps run one after another: a candidate must wait for the offer it belongs to. */
+  let signalling: Promise<unknown> = Promise.resolve();
 
-  const adopt = (c: DataConnection, host: boolean) => {
-    matched = true;
-    conn = c;
-    if (host) peer?.disconnect(); // leaves the data channel up, frees the queue id for the next pair
-    c.on('data', (d) => {
-      if (!closed && d && typeof d === 'object' && (d as Msg).t !== undefined) on.message(d as Msg);
-    });
-    const drop = () => {
-      if (closed) return;
-      close();
-      on.lost();
-    };
-    c.on('close', drop);
-    c.on('error', drop);
-    on.found({ host, send: (m) => void (c.open && c.send(m)) });
-  };
-
-  const retry = () => {
-    peer?.destroy();
-    peer = null;
-    if (!closed && !matched) timer = window.setTimeout(wait, 600 + Math.random() * 900);
-  };
-
-  /** Try to take the meeting id and wait there for someone to dial in. */
-  function wait() {
-    const p = (peer = new Peer(mode.kind === 'host' ? ROOM_PREFIX + mode.code : QUEUE_ID));
-    p.on('connection', (c) => {
-      if (matched) {
-        // a second caller arrived before the id was released: send them round again
-        c.on('open', () => {
-          c.send({ t: 'busy' });
-          window.setTimeout(() => c.close(), 300);
-        });
-        return;
-      }
-      matched = true;
-      // a caller who never finishes connecting must not hold the queue for ever
-      const stale = window.setTimeout(() => {
-        matched = false;
-        c.close();
-      }, 8000);
-      c.on('open', () => {
-        clearTimeout(stale);
-        if (closed) return;
-        c.send({ t: 'ok' });
-        adopt(c, true);
-      });
-    });
-    p.on('error', (e) => {
-      if (closed || matched) return;
-      if (e.type === 'unavailable-id') {
-        p.destroy();
-        if (mode.kind === 'host') fail('taken');
-        else dial();
-      } else retry();
-    });
-  }
-
-  function fail(why: Failure) {
-    if (closed || matched) return;
-    close();
-    on.failed(why);
-  }
-
-  /** Someone is already waiting: call them. */
-  function dial() {
+  const ws = new WebSocket(SERVER_URL);
+  const stopTicker = ticker(() => {
     if (closed) return;
-    const p = (peer = new Peer());
-    let settled = false;
-    const settle = (ok: boolean, c?: DataConnection) => {
-      if (settled || closed) return;
-      settled = true;
-      clearTimeout(giveUp);
-      if (ok && c) adopt(c, false);
-      else if (mode.kind === 'join') fail('missing');
-      else retry();
-    };
-    const giveUp = window.setTimeout(() => settle(false), 8000);
-    p.on('open', () => {
-      const c = p.connect(mode.kind === 'join' ? ROOM_PREFIX + mode.code : QUEUE_ID, { reliable: true, serialization: 'json' });
-      c.on('data', (d) => settle((d as { t?: string })?.t === 'ok', c));
-      c.on('error', () => settle(false));
-    });
-    p.on('error', () => settle(false));
+    if (performance.now() - heard > SILENT_MS) return end();
+    if (ws.readyState === WebSocket.OPEN) ws.send('{"op":"ping"}');
+  });
+  const out = (f: object) => {
+    if (!closed && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(f));
+  };
+
+  /** The connection is gone: before pairing that is a failed search, after it a lost opponent. */
+  function end() {
+    if (closed) return;
+    const wasMatched = matched;
+    close();
+    if (wasMatched) on.lost();
+    else on.failed('unreachable');
   }
+
+  function state(f: Frame) {
+    if (!matched || typeof f.n !== 'number' || f.n <= seenN || !f.m || typeof f.m !== 'object') return;
+    seenN = f.n;
+    on.message(f.m as Msg);
+  }
+
+  function frame(raw: unknown) {
+    if (closed || typeof raw !== 'string') return;
+    let f: Frame;
+    try {
+      f = JSON.parse(raw);
+    } catch {
+      return;
+    }
+    if (!f || typeof f !== 'object') return;
+    heard = performance.now();
+    switch (f.op) {
+      case 'paired':
+        if (matched) return;
+        matched = true;
+        on.found({ host: f.host === true, send });
+        return;
+      case 'fail':
+        if (matched) return;
+        close();
+        on.failed(f.why === 'taken' || f.why === 'missing' ? f.why : 'unreachable');
+        return;
+      case 'msg':
+        if (matched && f.m && typeof f.m === 'object') on.message(f.m as Msg);
+        return;
+      case 's':
+        return state(f);
+      case 'gone':
+        return end();
+      case 'rtc':
+        return rtc(f);
+    }
+  }
+
+  /** The server offers the state channel; answer it. Failure here only means state stays on the WebSocket. */
+  function rtc(f: Frame) {
+    const offer = f.offer as RTCSessionDescriptionInit | undefined;
+    const cand = f.candidate as RTCIceCandidateInit | undefined;
+    signalling = signalling
+      .then(async () => {
+        if (closed) return;
+        if (offer && typeof offer.sdp === 'string') {
+          pc?.close();
+          const p = (pc = new RTCPeerConnection(RTC_CONFIG));
+          p.onicecandidate = (e) => e.candidate && out({ op: 'rtc', candidate: e.candidate.toJSON() });
+          p.ondatachannel = (e) => {
+            dc = e.channel;
+            dc.onmessage = (m) => {
+              if (closed || typeof m.data !== 'string') return;
+              try {
+                const sf = JSON.parse(m.data);
+                if (sf && sf.op === 's') {
+                  heard = performance.now();
+                  state(sf);
+                }
+              } catch {}
+            };
+          };
+          await p.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
+          await p.setLocalDescription(await p.createAnswer());
+          out({ op: 'rtc', answer: { type: 'answer', sdp: p.localDescription?.sdp } });
+        } else if (cand && pc) await pc.addIceCandidate(cand);
+      })
+      .catch(() => {});
+  }
+
+  function send(m: Msg) {
+    if (closed) return;
+    if (m.t !== 's') return out({ op: 'msg', m });
+    const raw = JSON.stringify({ op: 's', n: sentN++, m });
+    if (dc?.readyState === 'open') {
+      try {
+        return dc.send(raw);
+      } catch {}
+    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(raw);
+  }
+
+  ws.onopen = () => out(mode.kind === 'queue' ? { op: 'find', mode: 'queue' } : { op: 'find', mode: mode.kind, code: mode.code });
+  ws.onmessage = (e) => frame(e.data);
+  ws.onclose = end;
+  ws.onerror = end;
 
   function close() {
     closed = true;
-    clearTimeout(timer);
-    conn?.close();
-    peer?.destroy();
-    peer = conn = null;
+    stopTicker();
+    ws.onclose = ws.onerror = ws.onmessage = null;
+    ws.close();
+    dc?.close();
+    pc?.close();
+    dc = pc = null;
   }
 
-  if (mode.kind === 'join') dial();
-  else wait();
   return {
     close(graceMs = 0) {
-      // a short grace lets a parting message ('leave') get out before the channel shuts
+      // a short grace lets a parting message ('leave') get out before the connection shuts
       if (graceMs > 0) {
-        closed = true;
-        window.setTimeout(close, graceMs);
+        if (closed) return;
+        closed = true; // no more callbacks, but the socket stays open a moment
+        window.setTimeout(() => {
+          closed = false;
+          close();
+        }, graceMs);
       } else close();
     },
   };
