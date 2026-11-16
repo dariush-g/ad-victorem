@@ -1,4 +1,5 @@
 import { STAT_MAX, type StatName, type Vitals } from './stats';
+import { xpToNext, type Career } from './career';
 import { FRAME } from './portrait';
 
 
@@ -58,10 +59,26 @@ const CALLOUTS: Callout[] = [
   { stat: 'agility', label: 'Agility', corner: 'br', point: at(0.075, 0.36), note: (v) => `Move speed ×${v.speed.toFixed(2)}` },
 ];
 
-/** The "body" tab. `canvas` is where portrait.ts draws the figure. */
-export function createCharacterSheet(vitals: Vitals, armour: () => string) {
+/**
+ * The "body" tab. `canvas` is where portrait.ts draws the figure. `career` gives the level, money
+ * and skill points; `spend` is called when the player puts a point into a stat.
+ */
+export function createCharacterSheet(vitals: Vitals, armour: () => string, career: () => Career, spend: (stat: StatName) => void) {
   const el = document.createElement('div');
   el.className = 'sheet';
+  // level, experience toward the next, money, and points waiting to be spent
+  const head = el.appendChild(document.createElement('div'));
+  head.className = 'sheet-career';
+  const levelEl = head.appendChild(document.createElement('div'));
+  levelEl.className = 'career-level';
+  const xpBar = head.appendChild(document.createElement('div'));
+  xpBar.className = 'career-xp';
+  const xpFill = xpBar.appendChild(document.createElement('i'));
+  const xpText = xpBar.appendChild(document.createElement('span'));
+  const moneyEl = head.appendChild(document.createElement('div'));
+  moneyEl.className = 'career-money';
+  const pointsEl = el.appendChild(document.createElement('div'));
+  pointsEl.className = 'career-points';
   const figure = el.appendChild(document.createElement('div'));
   figure.className = 'sheet-figure';
   figure.style.height = HGT + 'px';
@@ -89,22 +106,37 @@ export function createCharacterSheet(vitals: Vitals, armour: () => string) {
   const notes = CALLOUTS.map((c) => {
     const box = figure.appendChild(document.createElement('div'));
     box.className = 'stat ' + c.corner;
-    const name = box.appendChild(document.createElement('div'));
+    const top = box.appendChild(document.createElement('div'));
+    top.className = 'stat-top';
+    const name = top.appendChild(document.createElement('div'));
     name.className = 'stat-name';
     name.textContent = c.label;
+    const plus = top.appendChild(document.createElement('button'));
+    plus.className = 'stat-plus';
+    plus.textContent = '+';
+    plus.title = `Spend a skill point on ${c.label.toLowerCase()}`;
+    plus.addEventListener('click', () => spend(c.stat));
     const pips = box.appendChild(document.createElement('div'));
     pips.className = 'stat-pips';
     for (let i = 0; i < STAT_MAX; i++) pips.appendChild(document.createElement('i'));
     const note = box.appendChild(document.createElement('div'));
     note.className = 'stat-note';
-    return { c, name, pips, note };
+    return { c, name, pips, note, plus };
   });
   const live = el.appendChild(document.createElement('div'));
   live.className = 'sheet-live';
 
   const render = () => {
-    for (const { c, name, pips, note } of notes) {
+    const k = career(), need = xpToNext(k.level);
+    levelEl.textContent = `Level ${k.level}`;
+    xpFill.style.width = `${(k.xp / need) * 100}%`;
+    xpText.textContent = `${k.xp} / ${need} XP`;
+    moneyEl.textContent = `${k.money.toLocaleString()} gold`;
+    pointsEl.hidden = k.points <= 0;
+    pointsEl.textContent = `${k.points} skill ${k.points === 1 ? 'point' : 'points'} to spend: press + beside a skill`;
+    for (const { c, name, pips, note, plus } of notes) {
       const lvl = vitals.stats[c.stat];
+      plus.hidden = k.points <= 0 || lvl >= STAT_MAX;
       name.textContent = `${c.label} ${ROMAN[lvl]}`;
       Array.from(pips.children).forEach((p, i) => p.classList.toggle('on', i < lvl));
       note.textContent = c.note(vitals);

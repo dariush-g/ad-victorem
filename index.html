@@ -17,6 +17,45 @@
       #menu { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(20, 12, 10, 0.55);
         color: #fff7e6; font-family: 'Trajan Pro', 'Cinzel', Georgia, 'Times New Roman', serif; user-select: none; }
       #menu[hidden] { display: none; }
+      #start { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
+        padding: 16px; box-sizing: border-box; overflow-y: auto; color: #fff7e6; user-select: none;
+        background: radial-gradient(ellipse at 50% 40%, rgba(30, 18, 12, 0.35), rgba(12, 7, 5, 0.85)); }
+      #start[hidden] { display: none; }
+      .start-title { text-align: center; }
+      .start-title h1 { margin: 0; font: bold clamp(40px, 9vw, 84px) 'Trajan Pro', 'Cinzel', Georgia, serif; letter-spacing: 0.12em; color: #f0c050;
+        text-transform: uppercase; text-shadow: 0 3px 0 #5a3a22, 0 8px 30px rgba(0, 0, 0, 0.7); }
+      .start-sub { margin-top: 6px; font: italic 16px Georgia, serif; letter-spacing: 3px; color: rgba(255, 247, 230, 0.8); }
+      .start-panels { display: flex; flex-wrap: wrap; gap: 18px; justify-content: center; align-items: flex-start; width: 100%; }
+      .start-box { width: min(380px, 100%); padding: 18px 20px; box-sizing: border-box; background: rgba(38, 24, 18, 0.94);
+        border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+      .start-box h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: 3px; color: #f0c050; text-transform: uppercase; }
+      .start-box .menu-name { margin-bottom: 12px; }
+      .start-play { width: 100%; font: bold 20px Georgia, serif; letter-spacing: 6px; text-transform: uppercase; color: #1a1210; cursor: pointer;
+        padding: 12px; background: #f0c050; border: 1px solid #1a1210; border-radius: 4px; }
+      .start-play:hover { background: #ffe08a; }
+      #shop { position: fixed; inset: 0; z-index: 15; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
+        background: rgba(20, 12, 10, 0.55); color: #fff7e6; user-select: none; }
+      #shop[hidden] { display: none; }
+      .shop-box { width: min(560px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; padding: 18px 20px; box-sizing: border-box;
+        background: rgba(38, 24, 18, 0.96); border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+      .shop-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+      .shop-head h2 { margin: 0; flex: 1; font-size: 20px; letter-spacing: 4px; color: #f0c050; text-transform: uppercase; }
+      .shop-gold { font: bold 15px Georgia, serif; color: #f0c050; }
+      .shop-close { width: 30px; height: 30px; font: bold 15px Georgia, serif; color: #fff7e6; cursor: pointer; background: transparent; border: 1px solid #6e5334; border-radius: 4px; }
+      .shop-close:hover { border-color: #f0c050; }
+      .shop-note { min-height: 1em; margin-bottom: 8px; font: 13px Georgia, serif; color: #f0a050; }
+      .shop-note:empty { display: none; }
+      .shop-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+      .shop-item { display: grid; grid-template-columns: 40px 1fr auto; gap: 12px; align-items: center; padding: 8px 10px;
+        background: rgba(0, 0, 0, 0.25); border: 1px solid #6e5334; border-radius: 4px; }
+      .shop-item .icon { width: 40px; height: 40px; }
+      .shop-item .name { font: bold 14px Georgia, serif; color: #fff7e6; }
+      .shop-item .effect { font: 12px Georgia, serif; color: rgba(255, 247, 230, 0.7); }
+      .shop-item button { min-width: 96px; font: bold 13px Georgia, serif; letter-spacing: 1px; color: #1a1210; cursor: pointer; padding: 8px 10px;
+        background: #f0c050; border: 1px solid #1a1210; border-radius: 3px; }
+      .shop-item button:hover:not(:disabled) { background: #ffe08a; }
+      .shop-item button:disabled { cursor: default; color: rgba(255, 247, 230, 0.6); background: transparent; border-color: #6e5334; }
+      .shop-help { margin-top: 10px; font: 12px Georgia, serif; color: rgba(255, 247, 230, 0.6); text-align: center; }
       .menu-box { width: min(420px, calc(100vw - 32px)); padding: 26px 28px 22px; box-sizing: border-box; background: rgba(38, 24, 18, 0.94);
         border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
       .menu-box h1 { margin: 0 0 18px; text-align: center; font-size: 28px; letter-spacing: 4px; color: #f0c050; text-transform: uppercase; }
@@ -51,6 +90,36 @@
         padding: 11px; background: rgba(240, 192, 80, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
       .result-actions button:hover:not(:disabled) { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
       .result-actions button:disabled { cursor: default; opacity: 0.4; }
+      .menu-box { max-height: calc(100vh - 32px); overflow-y: auto; }
+      .menu-name[hidden] { display: none; }
+      .menu-account[hidden] { display: none; }
+      .menu-account { margin-bottom: 14px; padding: 12px; border: 1px solid rgba(240, 192, 80, 0.35); background: rgba(0, 0, 0, 0.2); font: 13px Georgia, serif; color: #fff7e6; }
+      .menu-account[data-state="guest"] .acct-user, .menu-account[data-state="user"] .acct-guest { display: none; }
+      .acct-note { margin-bottom: 8px; color: rgba(255, 247, 230, 0.75); }
+      .acct-form { display: flex; gap: 8px; margin-bottom: 8px; }
+      .acct-form input { flex: 1; min-width: 0; font: 14px Georgia, serif; padding: 8px 10px; color: #fff7e6; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(240, 192, 80, 0.4); }
+      .acct-form input:focus { outline: none; border-color: #f0c050; }
+      .acct-form input::placeholder { color: rgba(255, 247, 230, 0.45); }
+      .acct-buttons { display: flex; gap: 8px; }
+      .menu-account button { flex: 1; font: bold 12px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer; padding: 8px 10px;
+        background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(240, 192, 80, 0.45); }
+      .menu-account button:hover:not(:disabled) { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
+      .menu-account button:disabled { opacity: 0.5; cursor: default; }
+      .acct-user { display: flex; flex-direction: column; gap: 6px; }
+      .acct-user b { color: #f0c050; }
+      .acct-record { color: rgba(255, 247, 230, 0.75); }
+      .acct-msg { margin-top: 6px; min-height: 1em; color: #f0a050; }
+      .acct-msg:empty { display: none; }
+      .board { margin: 0; padding: 0; list-style: none; counter-reset: rank; font: 13px Georgia, serif; }
+      .board li { display: flex; gap: 10px; padding: 3px 0; counter-increment: rank; }
+      .board li::before { content: counter(rank) "."; width: 1.6em; text-align: right; color: rgba(255, 247, 230, 0.55); }
+      .board li span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+      .board li b { color: #f0c050; font-variant-numeric: tabular-nums; }
+      .board li.board-top { font-size: 15px; font-weight: bold; }
+      .board li.board-top::before { content: "★"; color: #f0c050; }
+      .board li.board-me span { color: #f0c050; }
+      .board li.board-empty { color: rgba(255, 247, 230, 0.55); }
+      .board li.board-empty::before { content: none; }
       .menu-box h2 { margin: 20px 0 8px; font-size: 13px; letter-spacing: 3px; color: #f0c050; text-transform: uppercase; }
       .menu-keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font: 13px Georgia, serif; }
       .menu-keys b { color: #f0c050; text-align: right; font-weight: bold; }
@@ -76,17 +145,32 @@
       .sheet-figure svg, .sheet-figure canvas { position: absolute; left: 0; width: 100%; }
       .sheet-figure svg { top: 0; height: 100%; }
       .sheet-figure canvas { top: 12px; aspect-ratio: 1; }
-      .stat { position: absolute; width: 132px; }
+      .stat { position: absolute; width: 170px; }
       .stat.tl, .stat.bl { left: 10px; }
       .stat.tr, .stat.br { right: 10px; text-align: right; }
       .stat.tl, .stat.tr { top: 9px; }
       .stat.bl, .stat.br { bottom: 9px; }
-      .stat-name { font: bold 14px Georgia, 'Times New Roman', serif; letter-spacing: 1.5px; color: #f0c050; text-shadow: 0 1px 2px #000; }
+      .stat-name { white-space: nowrap; font: bold 14px Georgia, 'Times New Roman', serif; letter-spacing: 1.5px; color: #f0c050; text-shadow: 0 1px 2px #000; }
       .stat-pips { display: flex; gap: 2px; margin: 4px 0; }
       .stat.tr .stat-pips, .stat.br .stat-pips { justify-content: flex-end; }
       .stat-pips i { width: 7px; height: 9px; background: rgba(0, 0, 0, 0.45); border: 1px solid #8a6a3a; box-sizing: border-box; }
       .stat-pips i.on { background: #f0c050; border-color: #f0c050; }
       .stat-note { font: 12px Georgia, 'Times New Roman', serif; letter-spacing: 0.4px; text-transform: none; color: #fff7e6; text-shadow: 0 1px 2px #000; }
+      .sheet-career { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font: 13px Georgia, serif; }
+      .career-level { font-size: 16px; font-weight: bold; color: #f0c050; white-space: nowrap; }
+      .career-xp { position: relative; flex: 1; height: 14px; background: rgba(0, 0, 0, 0.45); border: 1px solid #6e5334; border-radius: 3px; overflow: hidden; }
+      .career-xp i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(#7fb0e0, #3f6fa8); transition: width 0.3s; }
+      .career-xp span { position: absolute; inset: 0; text-align: center; font: bold 10px/14px Georgia, serif; letter-spacing: 1px; color: #fff7e6; }
+      .career-money { color: #f0c050; white-space: nowrap; }
+      .career-points { margin: -2px 0 10px; padding: 6px 10px; text-align: center; font: bold 12px Georgia, serif; letter-spacing: 1px;
+        color: #1a1210; background: #f0c050; border-radius: 3px; }
+      .career-points[hidden] { display: none; }
+      .stat-top { display: flex; align-items: center; gap: 6px; }
+      .stat.tr .stat-top, .stat.br .stat-top { flex-direction: row-reverse; }
+      .stat-plus { width: 20px; height: 20px; padding: 0; font: bold 15px/18px Georgia, serif; color: #1a1210; background: #f0c050;
+        border: 1px solid #1a1210; border-radius: 3px; cursor: pointer; pointer-events: auto; }
+      .stat-plus:hover { background: #ffe08a; }
+      .stat-plus[hidden] { display: none; }
       .sheet-live { margin-top: 10px; font: 12px Georgia, serif; letter-spacing: 1px; text-align: center; }
       .vitals { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
       .bar { position: relative; width: 230px; height: 15px; background: rgba(26, 18, 16, 0.7); border: 1px solid #1a1210;
@@ -134,12 +218,58 @@
         </div>
       </div>
     </div>
+    <div id="start">
+      <div class="start-title">
+        <h1>Ad Victorem</h1>
+        <div class="start-sub">Fight for your freedom</div>
+      </div>
+      <div class="start-panels">
+        <div class="start-box">
+            <div id="account" class="menu-account" data-state="guest">
+              <form class="acct-guest" id="acct-form">
+                <div class="acct-note">Log in to save your progress and count your wins. Guests play without saving.</div>
+                <div class="acct-form">
+                  <input id="acct-user" maxlength="16" placeholder="Username" autocomplete="username" spellcheck="false" />
+                  <input id="acct-pass" type="password" maxlength="128" placeholder="Password" autocomplete="current-password" />
+                </div>
+                <div class="acct-buttons">
+                  <button type="submit" data-act="login">Log in</button>
+                  <button type="button" data-act="register">Create account</button>
+                </div>
+              </form>
+              <div class="acct-user">
+                <div>Signed in as <b id="acct-name"></b></div>
+                <div id="acct-record" class="acct-record"></div>
+                <button data-act="logout">Log out</button>
+              </div>
+              <div id="acct-msg" class="acct-msg" aria-live="polite"></div>
+            </div>
+            <label class="menu-name">Your name
+              <input id="player-name" maxlength="16" placeholder="Name your gladiator" autocomplete="off" spellcheck="false" />
+            </label>
+          <button class="start-play" data-act="play">Play</button>
+        </div>
+        <div class="start-box start-board">
+          <h2>Leaderboard · most wins</h2>
+          <ol id="leaderboard" class="board"></ol>
+        </div>
+      </div>
+    </div>
+    <div id="shop" hidden>
+      <div class="shop-box">
+        <div class="shop-head">
+          <h2>Shop</h2>
+          <div id="shop-gold" class="shop-gold"></div>
+          <button class="shop-close" data-act="close" aria-label="Close shop">✕</button>
+        </div>
+        <div id="shop-note" class="shop-note"></div>
+        <div id="shop-list" class="shop-list"></div>
+        <div class="shop-help">Bought gear goes to your bag: equip it from the inventory (Tab). Esc closes the shop.</div>
+      </div>
+    </div>
     <div id="menu" hidden>
       <div class="menu-box">
         <h1>Ad Victorem</h1>
-        <label class="menu-name">Your name
-          <input id="player-name" maxlength="16" placeholder="Name your gladiator" autocomplete="off" spellcheck="false" />
-        </label>
         <div class="menu-actions">
           <button data-act="resume">Resume</button>
           <button data-act="search">Find opponent</button>
@@ -149,6 +279,8 @@
             <button data-act="join">Join</button>
           </div>
           <button data-act="practice">Practice</button>
+          <button data-act="shop">Shop</button>
+          <button data-act="title">Title screen</button>
         </div>
         <h2>Controls</h2>
         <div class="menu-keys">

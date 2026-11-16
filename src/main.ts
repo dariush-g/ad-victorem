@@ -2,9 +2,15 @@ import * as THREE from 'three';
 import { createArena, groundHeight, ceilingAt, confine, site, spawnPoint, R } from './arena';
 import { createPost, BASE_CHROMA } from './post';
 import { loadGladiator, isAttack, MOVE_INFO, MOVE_KINDS, HEAVY_CHARGE_BONUS, type MoveKind } from './gladiator';
-import { ITEMS, SLOTS } from './items';
+import { ITEMS, SLOTS, SHOP, STARTER, iconSVG } from './items';
 import { Inventory, createInventoryUI } from './inventory';
 import { findOpponent, makeCode, cleanCode, cleanName, type Link, type Mode, type Msg, type Search } from './net';
+import { account, buyItem, fetchLeaderboard, USERNAME, PASSWORD_MIN } from './account';
+import {
+  grantWin, spendPoint, loadLocalCareer, saveLocalCareer, freshCareer, loadLocalOwned, saveLocalOwned, loadLocalGear, saveLocalGear,
+  WIN_XP, WIN_MONEY, type Career,
+} from './career';
+import type { StatName } from './stats';
 import { BASE_DAMAGE, ZONES, ZONE_LIST, protection, touchedPart } from './hits';
 import { Vitals } from './stats';
 import { createVitalBars, createCharacterSheet } from './character';
@@ -80,10 +86,64 @@ function flashStamina() {
   bar.classList.add('empty');
 }
 // armour summary for the character sheet: what each body zone is protected by, all worn pieces together
-const sheet = createCharacterSheet(vitals, () => {
-  const parts = ZONE_LIST.map((z) => [ZONES[z].name, Math.round(protection(inventory.equipped, z) * 100)] as const).filter(([, p]) => p > 0);
-  return parts.length ? 'Armour: ' + parts.map(([n, p]) => `${n} ${p}%`).join(', ') : 'No armour';
-});
+const sheet = createCharacterSheet(
+  vitals,
+  () => {
+    const parts = ZONE_LIST.map((z) => [ZONES[z].name, Math.round(protection(inventory.equipped, z) * 100)] as const).filter(([, p]) => p > 0);
+    return parts.length ? 'Armour: ' + parts.map(([n, p]) => `${n} ${p}%`).join(', ') : 'No armour';
+  },
+  () => career(),
+  (stat) => void spendSkill(stat),
+);
+
+// --- career: level, experience, money and skill points. Logged in it lives on the server; as a guest, in this browser ---
+let localCareer = loadLocalCareer();
+const career = (): Career => account.profile?.career ?? localCareer;
+/** Items owned: the starting kit plus purchases. Logged in, the server's list; as a guest, this browser's. */
+let localOwned = loadLocalOwned(STARTER);
+const owned = (): string[] => account.profile?.owned ?? localOwned;
+
+/** Bring the fighter's stats in line with the career (between bouts only: the stats are fixed once a bout starts). */
+function applyCareer() {
+  if (phase === 'countdown' || phase === 'fight') return;
+  Object.assign(vitals.stats, career().stats);
+  vitals.health = Math.min(vitals.health, vitals.maxHealth);
+  vitals.stamina = Math.min(vitals.stamina, vitals.maxStamina);
+  renderRank();
+  portraitStale = true;
+  if (ui.open && ui.tab === SHEET_TAB) sheet.render();
+}
+
+/** Tell the player what a win brought: experience, money, and any levels. */
+function celebrate(before: Career, after: Career) {
+  if (after.level === before.level && after.xp === before.xp && after.money === before.money) return;
+  const gained = after.level - before.level;
+  ui.toast(
+    gained > 0
+      ? `Level up! Level ${after.level} · +${after.money - before.money} gold · press C to spend your skill ${after.points === 1 ? 'point' : 'points'}`
+      : `+${WIN_XP} XP · +${WIN_MONEY} gold`,
+  );
+}
+
+/** A guest's win: awarded here and kept in this browser. (Logged in, the server awards it and sends the new career.) */
+function rewardGuestWin() {
+  if (account.loggedIn) return;
+  const before = structuredClone(localCareer);
+  grantWin(localCareer);
+  saveLocalCareer(localCareer);
+  applyCareer();
+  celebrate(before, localCareer);
+}
+
+async function spendSkill(stat: StatName) {
+  if (phase === 'countdown' || phase === 'fight') return ui.toast('Skills can only be trained between bouts');
+  if (account.loggedIn) {
+    if (!(await account.spend(stat))) ui.toast('Could not spend the point');
+  } else if (spendPoint(localCareer, stat)) {
+    saveLocalCareer(localCareer);
+    applyCareer();
+  }
+}
 const portrait = createPortrait(renderer, scene, player);
 let portraitStale = true; // redraw the figure next time the sheet is in view
 let portraitSettle = 0; // seconds until a second redraw, once swinging cloth has come to rest
@@ -92,15 +152,66 @@ const SHEET_TAB = ui.addTab('Character', sheet.el, () => {
   sheet.render();
 });
 const rankSub = document.querySelector('#rank .sub')!;
+function renderRank() {
+  const w = inventory.equipped.weapon;
+  rankSub.textContent = `Level ${career().level} · Slave · ${w ? ITEMS[w].name : 'Bare hands'}`;
+}
 inventory.onChange = () => {
   for (const slot of SLOTS) player.equip(slot, inventory.equipped[slot]);
   portraitStale = true;
-  const w = inventory.equipped.weapon;
-  rankSub.textContent = `Slave · ${w ? ITEMS[w].name : 'Bare hands'}`;
+  renderRank();
   ui.render();
+  saveSoon();
 };
-for (const id of ['rudis', 'subligaculum', 'cord']) inventory.wear(id);
-for (const id of ['gladius', 'balteus', 'subligaculum_red', 'tunica', 'tunica_russa', 'galea', 'pectorale', 'manica', 'ocreae']) inventory.add(id);
+/** Logged in: keep the account's copy of the inventory up to date, a moment after each change. */
+let saveTimer = 0, restoring = false;
+function saveSoon() {
+  if (restoring) return;
+  clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    if (account.offline) return;
+    if (account.loggedIn) void account.save(inventory.snapshot());
+    else saveLocalGear(inventory.snapshot()); // a guest's gear stays in this browser
+  }, 1000);
+}
+
+/**
+ * Make the inventory hold exactly the owned items, each once, arranged as the saved `layout` where
+ * it can be. Anything not owned goes; owned items it lacks go into the bag (on a fresh start with no
+ * layout, straight onto the body if their slot is free, so a new gladiator holds the wooden sword).
+ */
+function syncInventory(layout: unknown) {
+  if (inventory.locked) return;
+  restoring = true;
+  if (!inventory.restore(layout)) inventory.restore({ bag: [], equipped: {} });
+  const own = new Set(owned()), seen = new Set<string>();
+  for (const slot of SLOTS) {
+    const id = inventory.equipped[slot];
+    if (id && (!own.has(id) || seen.has(id))) inventory.equipped[slot] = null;
+    else if (id) seen.add(id);
+  }
+  inventory.bag.forEach((st, i) => {
+    if (st && (!own.has(st.id) || seen.has(st.id))) inventory.bag[i] = null;
+    else if (st) seen.add(st.id);
+  });
+  for (const id of own) {
+    if (seen.has(id) || !Object.hasOwn(ITEMS, id)) continue;
+    const slot = ITEMS[id].slot;
+    if (layout == null && slot && !inventory.equipped[slot]) inventory.equipped[slot] = id;
+    else inventory.add(id);
+  }
+  // never without a loincloth
+  if (!inventory.equipped.garb) {
+    const i = inventory.bag.findIndex((st) => st && ITEMS[st.id].slot === 'garb');
+    if (i >= 0) {
+      inventory.equipped.garb = inventory.bag[i]!.id;
+      inventory.bag[i] = null;
+    }
+  }
+  restoring = false;
+  inventory.onChange();
+}
+syncInventory(loadLocalGear());
 
 // --- the duel: find an opponent from the room, gates rise, fight, back to the room ---
 type Phase = 'lobby' | 'searching' | 'countdown' | 'fight' | 'over' | 'practice';
@@ -159,6 +270,11 @@ function startSearch(mode: Mode) {
     found: onFound,
     message: onMessage,
     lost: onLost,
+    profile: (p) => {
+      const before = structuredClone(career());
+      account.update(p);
+      celebrate(before, career());
+    },
     failed(why) {
       search = null;
       phase = 'lobby';
@@ -172,7 +288,7 @@ function startSearch(mode: Mode) {
       );
       if (!menu.hidden) setMenu(true);
     },
-  });
+  }, account.loggedIn ? account.token : null);
   if (!menu.hidden) setMenu(true);
 }
 
@@ -189,7 +305,7 @@ function onFound(l: Link) {
   link = l;
   site.side = l.host ? 1 : -1; // the host fights from the north gate, the guest from the south
   for (const slot of SLOTS) foe.equip(slot, null);
-  setFoeName('');
+  setFoeName(l.foe ?? '');
   l.send({ t: 'gear', gear: { ...inventory.equipped }, name: playerName() });
   beginMatch();
 }
@@ -231,7 +347,7 @@ function onMessage(m: Msg) {
   if (!link) return;
   switch (m.t) {
     case 'gear':
-      setFoeName(cleanName(m.name));
+      setFoeName(link.foe ?? cleanName(m.name)); // an account name the server vouched for beats whatever they typed
       for (const slot of SLOTS) {
         const id = m.gear?.[slot];
         foe.equip(slot, typeof id === 'string' && Object.hasOwn(ITEMS, id) && ITEMS[id].slot === slot ? id : null);
@@ -326,6 +442,7 @@ function onMessage(m: Msg) {
         remote.hp = 0;
         remote.dead = true;
         finish('Victory');
+        rewardGuestWin();
       }
       break;
     case 'rematch':
@@ -639,6 +756,124 @@ let mouseHeld = false, blockHeld = false;
 const canvas = renderer.domElement;
 // Pause menu: shown whenever the mouse is free and the inventory isn't, so Esc (which the browser
 // spends on releasing pointer lock) brings it up. The site opens straight onto the game: click to take control.
+// --- title screen: log in or play as a guest, see the leaderboard, then into the room ---
+const startEl = document.getElementById('start')!;
+let startOpen = !startEl.hidden;
+function openStart() {
+  if (phase !== 'lobby' && phase !== 'practice') return; // not mid-search or mid-bout
+  startOpen = true;
+  startEl.hidden = false;
+  menu.hidden = true;
+  closeShop(false);
+  if (ui.open) ui.setOpen(false);
+  if (document.pointerLockElement) document.exitPointerLock();
+  renderAccount();
+  refreshLeaderboard(true);
+}
+function closeStart() {
+  if (!playerName()) {
+    ui.toast('Name your gladiator first, or log in');
+    nameInput.classList.add('missing');
+    nameInput.focus();
+    return;
+  }
+  startOpen = false;
+  startEl.hidden = true;
+  lock();
+}
+startEl.addEventListener('click', (e) => {
+  const act = (e.target as HTMLElement).closest('button')?.dataset.act;
+  if (act === 'login' || act === 'register') void enterAccount(act);
+  else if (act === 'logout') {
+    clearTimeout(saveTimer);
+    account.logout();
+    syncInventory(loadLocalGear()); // back to this browser's guest gear
+  } else if (act === 'play') closeStart();
+});
+
+// --- shop: gear for gold. Logged in, the server checks and records each purchase; a guest's stay in this browser ---
+const shopEl = document.getElementById('shop')!, shopList = document.getElementById('shop-list')!;
+const shopGold = document.getElementById('shop-gold')!, shopNote = document.getElementById('shop-note')!;
+let shopOpen = false, shopBusy = false;
+function openShop() {
+  if (phase !== 'lobby' && phase !== 'practice') return ui.toast('The shop is closed during a bout');
+  shopOpen = true;
+  shopEl.hidden = false;
+  menu.hidden = true;
+  shopNote.textContent = account.profile?.admin ? 'Admin: you own every item.' : '';
+  if (document.pointerLockElement) document.exitPointerLock();
+  renderShop();
+}
+function closeShop(backToMenu = true) {
+  if (!shopOpen) return;
+  shopOpen = false;
+  shopEl.hidden = true;
+  if (backToMenu) setMenu(true);
+}
+/** What an item does, in a few words. */
+function itemEffect(id: string) {
+  const d = ITEMS[id];
+  if (d.power) return `Weapon · hit force ×${d.power} · ${(d.edge ?? 0) >= 0.7 ? 'sharp' : 'blunt'}`;
+  const cover = Object.entries(d.covers ?? {}).map(([z, p]) => `${ZONES[z as keyof typeof ZONES].name} ${Math.round(p * 100)}%`);
+  return cover.length ? `Armour · ${cover.join(', ')}` : 'No protection: for the look';
+}
+function renderShop() {
+  if (!shopOpen) return;
+  const gold = career().money, own = new Set(owned());
+  shopGold.textContent = `${gold.toLocaleString()} gold`;
+  shopList.replaceChildren(
+    ...SHOP.map((d) => {
+      const row = document.createElement('div');
+      row.className = 'shop-item';
+      const icon = row.appendChild(document.createElement('div'));
+      icon.className = 'icon';
+      icon.innerHTML = iconSVG(d);
+      const text = row.appendChild(document.createElement('div'));
+      text.appendChild(document.createElement('div')).className = 'name';
+      (text.firstChild as HTMLElement).textContent = d.name;
+      const effect = text.appendChild(document.createElement('div'));
+      effect.className = 'effect';
+      effect.textContent = itemEffect(d.id);
+      const btn = row.appendChild(document.createElement('button'));
+      const have = own.has(d.id);
+      btn.textContent = have ? 'Owned' : `${d.price} gold`;
+      btn.disabled = have || shopBusy || gold < d.price!;
+      btn.title = have ? 'Already yours' : gold < d.price! ? `You need ${d.price! - gold} more gold` : `Buy ${d.name}`;
+      btn.addEventListener('click', () => void buy(d.id));
+      return row;
+    }),
+  );
+}
+async function buy(id: string) {
+  const d = ITEMS[id];
+  if (shopBusy || !d.price || owned().includes(id)) return;
+  if (account.loggedIn) {
+    shopBusy = true;
+    renderShop();
+    const failed = await buyItem(id);
+    shopBusy = false;
+    if (failed) {
+      shopNote.textContent = failed;
+      return renderShop();
+    }
+  } else {
+    if (localCareer.money < d.price) return void (shopNote.textContent = 'Not enough gold');
+    localCareer.money -= d.price;
+    localOwned.push(id);
+    saveLocalCareer(localCareer);
+    saveLocalOwned(localOwned);
+    renderAccount();
+  }
+  shopNote.textContent = '';
+  syncInventory(inventory.snapshot()); // the new item goes into the bag
+  ui.toast(`Bought ${d.name}: equip it from your bag (Tab)`);
+  if (ui.open && ui.tab === SHEET_TAB) sheet.render();
+  renderShop();
+}
+shopEl.addEventListener('click', (e) => {
+  if ((e.target as HTMLElement).closest('button')?.dataset.act === 'close') closeShop();
+});
+
 const menu = document.getElementById('menu')!;
 const menuBtn = (act: string) => menu.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
 const joinRow = menu.querySelector<HTMLElement>('[data-show="join"]')!, joinInput = document.getElementById('join-code') as HTMLInputElement;
@@ -647,7 +882,8 @@ const NAME_KEY = 'ad-victorem-name';
 try {
   nameInput.value = cleanName(localStorage.getItem(NAME_KEY));
 } catch {}
-const playerName = () => cleanName(nameInput.value);
+/** Logged in, the fighter goes by the account's username; a guest types a name. */
+const playerName = () => account.profile?.name ?? cleanName(nameInput.value);
 nameInput.addEventListener('input', () => {
   nameInput.classList.remove('missing');
   try {
@@ -659,11 +895,112 @@ function requireName(): boolean {
   if (playerName()) return true;
   ui.toast('Name your gladiator first');
   nameInput.classList.add('missing');
-  if (document.pointerLockElement) document.exitPointerLock();
-  setMenu(true);
+  openStart();
   nameInput.focus();
   return false;
 }
+// --- accounts: log in to keep progress and appear on the leaderboard; guests play without saving ---
+const accountEl = document.getElementById('account')!;
+const userInput = document.getElementById('acct-user') as HTMLInputElement, passInput = document.getElementById('acct-pass') as HTMLInputElement;
+const acctNote = accountEl.querySelector('.acct-note')!;
+const acctMsg = document.getElementById('acct-msg')!, nameLabel = nameInput.closest('label')!;
+const boardEl = document.getElementById('leaderboard')!;
+let accountBusy = false;
+
+function renderAccount() {
+  const p = account.profile;
+  accountEl.dataset.state = p ? 'user' : 'guest';
+  nameLabel.hidden = !!p; // logged in, the username is the fighter's name
+  if (p) {
+    document.getElementById('acct-name')!.textContent = p.name;
+    document.getElementById('acct-record')!.textContent =
+      `Level ${p.career.level} · ${p.career.money.toLocaleString()} gold · ${p.wins} ${p.wins === 1 ? 'win' : 'wins'} · ${p.losses} ${p.losses === 1 ? 'loss' : 'losses'}`;
+  } else {
+    const k = localCareer, fresh = k.level === 1 && k.xp === 0 && k.money === 0;
+    acctNote.textContent = fresh
+      ? 'Log in to save your progress to the cloud and count your wins. Guests keep their progress on this computer only.'
+      : `As a guest you are level ${k.level} with ${k.money.toLocaleString()} gold, saved on this computer only. Create an account to keep it: your level, skills, gold and gear come with you.`;
+  }
+  for (const b of accountEl.querySelectorAll('button')) b.disabled = accountBusy;
+}
+
+account.onChange = () => {
+  renderAccount();
+  applyCareer();
+  renderShop();
+  if (!account.offline) refreshLeaderboard(true);
+};
+
+/** Logged in: bring in the account's saved inventory, or give a new account the current one. */
+/** Logged in: wear and carry what the account owns, as it was last arranged. */
+function adoptProgress() {
+  if (!account.profile) return;
+  clearTimeout(saveTimer); // a guest save still pending must not land on the account
+  syncInventory(account.profile.progress ?? null);
+  if (!account.profile.progress && !account.offline) void account.save(inventory.snapshot());
+}
+
+async function enterAccount(op: 'login' | 'register') {
+  if (accountBusy) return;
+  const name = userInput.value.trim(), password = passInput.value;
+  const problem = !USERNAME.test(name)
+    ? 'Usernames are 3–16 letters, numbers or _'
+    : password.length < PASSWORD_MIN
+      ? `Passwords need at least ${PASSWORD_MIN} characters`
+      : null;
+  if (problem && (op === 'register' || !name || !password)) return void (acctMsg.textContent = problem);
+  accountBusy = true;
+  acctMsg.textContent = op === 'register' ? 'Creating account…' : 'Logging in…';
+  renderAccount();
+  // signing up carries the guest's career (level, skills, gold) and gear into the new account
+  const inherit = op === 'register' ? { career: localCareer, owned: localOwned, progress: inventory.snapshot() } : undefined;
+  const failed = await account.enter(op, name, password, inherit);
+  if (!failed && op === 'register') {
+    // it belongs to the account now: the guest in this browser starts over, so it can't be carried into a second account
+    localCareer = freshCareer();
+    localOwned = [...STARTER];
+    saveLocalCareer(null);
+    saveLocalOwned(null);
+    saveLocalGear(null);
+  }
+  accountBusy = false;
+  acctMsg.textContent = failed ?? '';
+  if (!failed) {
+    passInput.value = '';
+    adoptProgress();
+    ui.toast(op === 'register' ? `Welcome, ${account.profile!.name}` : `Welcome back, ${account.profile!.name}${account.offline ? ' (offline)' : ''}`);
+  }
+  renderAccount();
+}
+
+let boardAt = 0;
+/** The leaderboard in the menu: refreshed when the menu opens (at most every 15 s) or a result comes in. */
+function refreshLeaderboard(force = false) {
+  const now = performance.now();
+  if (!force && now - boardAt < 15_000) return;
+  boardAt = now;
+  void fetchLeaderboard().then((top) => {
+    boardEl.replaceChildren();
+    if (!top) return void (boardEl.innerHTML = '<li class="board-empty">Leaderboard unavailable</li>');
+    if (top.length === 0) return void (boardEl.innerHTML = '<li class="board-empty">No wins recorded yet</li>');
+    top.forEach((e, i) => {
+      const li = boardEl.appendChild(document.createElement('li'));
+      if (i === 0) li.className = 'board-top';
+      const name = li.appendChild(document.createElement('span'));
+      name.textContent = e.name;
+      if (e.name === account.profile?.name) li.classList.add('board-me');
+      li.appendChild(document.createElement('b')).textContent = String(e.wins);
+    });
+  });
+}
+
+// a real form, so password managers offer to save the login; submitting it never reloads the page
+document.getElementById('acct-form')!.addEventListener('submit', (e) => e.preventDefault());
+
+applyCareer();
+renderAccount();
+void account.resume().then((ok) => ok && adoptProgress());
+
 /** Join a friend's match with the code typed into the menu. Returns false (menu stays open) if it isn't a valid code. */
 function joinByCode(): boolean {
   const code = cleanCode(joinInput.value);
@@ -677,10 +1014,11 @@ function joinByCode(): boolean {
   return true;
 }
 function setMenu(open: boolean) {
-  menu.hidden = !open;
-  if (!open) return;
+  menu.hidden = !open || startOpen || shopOpen; // the title screen and the shop each take the place of the menu
+  if (menu.hidden) return;
   // buttons follow the match state
   const idle = phase === 'lobby' || phase === 'searching' || phase === 'practice';
+  menuBtn('shop').hidden = menuBtn('title').hidden = !(phase === 'lobby' || phase === 'practice');
   menuBtn('search').hidden = !(phase === 'lobby' || phase === 'searching');
   menuBtn('search').textContent = phase === 'searching' ? 'Cancel search' : 'Find opponent';
   menuBtn('practice').hidden = !idle || phase === 'searching';
@@ -696,6 +1034,8 @@ menu.addEventListener('click', (e) => {
   const act = (e.target as HTMLElement).closest('button')?.dataset.act;
   if (!act) return;
   if ((act === 'search' || act === 'host' || act === 'join') && phase === 'lobby' && !requireName()) return;
+  if (act === 'shop') return openShop();
+  if (act === 'title') return openStart();
   if (act === 'join' && !joinByCode()) return;
   if (act === 'search') toggleSearch();
   if (act === 'host') startSearch({ kind: 'host', code: makeCode() });
@@ -711,6 +1051,7 @@ function setInventoryOpen(open: boolean, tab?: number) {
   } else lock();
 }
 canvas.addEventListener('click', () => {
+  if (startOpen || shopOpen) return;
   if (ui.open) setInventoryOpen(false);
   else if (!locked) lock();
 });
@@ -737,10 +1078,23 @@ document.addEventListener('mouseup', (e) => {
   if (e.button === 0) mouseHeld = false;
 });
 document.addEventListener('keydown', (e) => {
+  // typing a username or password: keys are text, not controls (Enter logs in)
+  if (e.target === userInput || e.target === passInput) {
+    if (e.code === 'Enter') void enterAccount('login');
+    if (e.code !== 'Escape') return;
+  }
   // typing a friend's code: keys are text, not controls (Enter joins)
   if (e.target === nameInput) {
     if (e.code === 'Enter') nameInput.blur();
     if (e.code !== 'Escape') return;
+  }
+  if (startOpen) {
+    if (e.code === 'Enter' && e.target === document.body) closeStart();
+    return; // the title screen takes no game keys
+  }
+  if (shopOpen) {
+    if (e.code === 'Escape' && !e.repeat) closeShop();
+    return;
   }
   if (e.target === joinInput) {
     if (e.code === 'Enter' && joinByCode()) {
@@ -940,5 +1294,5 @@ function frame() {
   updateFoeLabel();
   post.render();
 }
-if (!playerName()) setMenu(true); // first visit: ask for a name before anything else
+openStart(); // every visit begins at the title screen
 frame();

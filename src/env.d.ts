@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
+  /** Development only (.env.development.local): the offline admin's password. Never set for production builds. */
+  readonly VITE_DEV_ADMIN_PASSWORD?: string;
   /** The duel server's WebSocket, e.g. wss://duel.example.com. Unset: ws://<this page's host>:8080, for local dev. */
   readonly VITE_SERVER_URL?: string;
   /** Firebase Realtime Database for the old peer-to-peer relay (src/relay.ts, no longer used). */

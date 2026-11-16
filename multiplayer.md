@@ -139,6 +139,35 @@ The fight is still decided by the clients. The server only relays.
 
 There is **no cheat prevention**, because clients are authoritative: a modified client could fake hits (damage is clamped to 0–200 per hit), ignore hits, or misreport health. With a server in the middle, server-side checks can be added later, such as hit plausibility (distance, timing) or fully authoritative simulation.
 
+## Accounts and leaderboard
+
+Optional. Guests play as before; logged-in players keep their inventory and a win/loss record.
+
+- **Storage:** `server/accounts.ts` keeps everything in one JSON file, `DATA_FILE` (default `server/data/accounts.json`, gitignored). Writes go to a temp file that is renamed over the old one. Back this file up: it is the whole account database.
+- **Passwords:** never stored. Each account has a random salt and a scrypt hash. Logins compare hashes in constant time, and unknown names are hashed too, so reply timing doesn't reveal which names exist.
+- **Usernames:** 3–16 letters, digits or `_`, unique ignoring case.
+- **Sessions:** logging in returns a random token, which the client keeps in localStorage. The file stores only the token's SHA-256. Sessions last 30 days.
+- **Limits:** 30 logins or sign-ups per address per minute (the real address comes from `X-Forwarded-For` when behind the local proxy). After 5 wrong passwords in a row an account refuses logins for a minute. Saved progress is capped at 1500 characters.
+- **Requests** (any WebSocket): `register` / `login {id, name, password}`, `resume {id, token}`, `logout {token}`, `save {id, token, progress}`, `board {id}`. Each is answered by `reply {id, ok, ...}`.
+- **Recording results:** `find` may carry the session `token`. When both fighters of a pair are logged in as different accounts, the server records each bout itself: the side that sends `dead` lost, its partner won. Only the first `dead` of a bout counts, and a new bout starts once both send `rematch`. Both then get a `profile` frame with their new counts. Bouts against guests, and fights a player abandons, aren't recorded.
+- **Names:** `paired` carries `foe`, the opponent's account name (null for a guest). The client shows that instead of the name in `gear`, so nobody can fight under a registered player's name.
+- **Leaderboard:** the 10 accounts with the most wins (ties: fewer losses, then the older account). The menu shows it, with the leader starred.
+- **Career** (`src/career.ts`, with a server copy in `server/career.ts`; keep the two in step):
+  - Each win: +100 XP and +50 gold.
+  - Next level needs `100 + 25 × (level − 1)` XP.
+  - Each level brings +1 skill point and +100 gold. Points raise strength, stamina, health or agility, up to 10.
+  - **Logged in:** the server awards a win's XP and money when it settles the bout (against an account or a guest) and pushes the new career in the `profile` frame. `spend {id, token, stat}` spends a point after checking there is one and the stat isn't at its cap.
+  - **Guests:** the client awards wins itself and keeps the career in localStorage only.
+  - **Sign-up:** `register` may carry `career`, the guest's, which the server cleans (whole numbers in range, points recomputed, stats reset if they claim more raises than the level allows). The browser then clears its local copy.
+  - Wins by the opponent fleeing earn nothing, and stats are fixed for the length of a bout.
+- **Items and shop:**
+  - Everyone starts with the wooden sword and loincloth (`STARTER`). Everything else is bought with gold. Prices are in `src/items.ts` (`price`), with a server copy in `server/shop.ts`; keep the two in step.
+  - The server keeps each account's `owned` list. `buy {id, token, item}` checks the price and that the item isn't already owned. `save` refuses any arrangement holding an item the account doesn't own, or one item twice.
+  - Guests keep owned items and gear in localStorage. Signing up carries them over (`owned` and `progress` in `register`).
+  - Bumping `GEAR_VERSION` in `server/accounts.ts` resets every account to the starting kit at the next server start, keeping level and gold.
+- **Admins:** `cd server && npm run make-admin -- <name>` asks for a password and stores only its hash in `data/admins.json` (`ADMINS_FILE`, gitignored, read at each admin login, so no restart is needed). Admins own every item, and nobody can register an admin's name. For `npm run dev` only, `VITE_DEV_ADMIN_PASSWORD` in `.env.development.local` lets `admin` log in when the server can't be reached. Production builds drop that code and the password.
+- **Limit:** since clients are authoritative, a modified client can still fake hits, and two accounts owned by one person can trade wins. A guest career lives in the browser, so it can be edited before it is carried into a new account.
+
 ## Match flow
 
 1. **lobby** → **searching** (`findOpponent` opens a WebSocket and sends `find`).

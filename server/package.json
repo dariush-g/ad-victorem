@@ -5,7 +5,8 @@
   "scripts": {
     "build": "tsc -p .",
     "start": "node dist/server.js",
-    "smoke": "node dist/smoke.js"
+    "smoke": "node dist/smoke.js",
+    "make-admin": "node dist/make-admin.js"
   },
   "engines": {
     "node": ">=18"

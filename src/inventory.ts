@@ -57,6 +57,29 @@ export class Inventory {
     this.onChange();
   }
 
+  /** Everything carried, as plain data for saving to an account. */
+  snapshot(): { bag: (Stack | null)[]; equipped: Record<string, string | null> } {
+    return { bag: this.bag.map((s) => s && { id: s.id, n: s.n }), equipped: { ...this.equipped } };
+  }
+
+  /** Replace everything carried with a saved snapshot. Unknown items, and items in the wrong slot, are dropped. Returns false if `data` isn't a snapshot. */
+  restore(data: unknown): boolean {
+    const d = data as { bag?: unknown; equipped?: unknown };
+    if (!d || typeof d !== 'object' || !Array.isArray(d.bag) || !d.equipped || typeof d.equipped !== 'object') return false;
+    const known = (id: unknown): id is string => typeof id === 'string' && Object.hasOwn(ITEMS, id);
+    for (let i = 0; i < this.bag.length; i++) {
+      const s = d.bag[i] as Stack | null;
+      this.bag[i] = s && known(s.id) && Number.isInteger(s.n) && s.n > 0 ? { id: s.id, n: Math.min(s.n, ITEMS[s.id].stack) } : null;
+    }
+    for (const slot of SLOTS) {
+      const id = (d.equipped as Record<string, unknown>)[slot];
+      if (known(id) && ITEMS[id].slot === slot) this.equipped[slot] = id;
+      else if (slot !== 'garb') this.equipped[slot] = null; // never left without a loincloth
+    }
+    this.onChange();
+    return true;
+  }
+
   /** Equip the item in a bag space; whatever it replaces takes that space. */
   equipFromBag(i: number): boolean {
     const s = this.bag[i], slot = s && ITEMS[s.id].slot;

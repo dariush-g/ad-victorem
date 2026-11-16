@@ -9,5 +9,5 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "files": ["server.ts", "smoke.ts"]
+  "files": ["server.ts", "accounts.ts", "career.ts", "shop.ts", "make-admin.ts", "smoke.ts"]
 }

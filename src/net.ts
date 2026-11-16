@@ -13,7 +13,7 @@ import type { Zone } from './hits';
  *    UDP): the fighter state sent many times a second, where only the newest matters. If it never
  *    opens (UDP blocked on this network), state goes over the WebSocket too.
  */
-const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? `ws://${location.hostname || 'localhost'}:8080`;
+export const SERVER_URL: string = import.meta.env.VITE_SERVER_URL ?? `ws://${location.hostname || 'localhost'}:8080`;
 
 /** For the browser's side of the data channel. The server has a public address, so STUN is only a help. */
 const RTC_CONFIG: RTCConfiguration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
@@ -68,6 +68,8 @@ export type Msg =
 export interface Link {
   /** The host fights from the north gate, the guest from the south. */
   readonly host: boolean;
+  /** The opponent's account name, vouched for by the server; null for a guest (then only their `gear` name is known). */
+  readonly foe: string | null;
   send(m: Msg): void;
 }
 
@@ -103,7 +105,12 @@ function ticker(tick: () => void): () => void {
 
 type Frame = { op?: unknown; [k: string]: unknown };
 
-export function findOpponent(mode: Mode, on: { found(link: Link): void; message(m: Msg): void; lost(): void; failed(why: Failure): void }): Search {
+/** Callbacks for a search, plus `token` (a logged-in session) so the server can record the result. */
+export function findOpponent(
+  mode: Mode,
+  on: { found(link: Link): void; message(m: Msg): void; lost(): void; failed(why: Failure): void; profile?(p: unknown): void },
+  token: string | null = null,
+): Search {
   let closed = false, matched = false;
   let heard = performance.now();
   let pc: RTCPeerConnection | null = null, dc: RTCDataChannel | null = null;
@@ -151,7 +158,7 @@ export function findOpponent(mode: Mode, on: { found(link: Link): void; message(
       case 'paired':
         if (matched) return;
         matched = true;
-        on.found({ host: f.host === true, send });
+        on.found({ host: f.host === true, foe: typeof f.foe === 'string' ? f.foe : null, send });
         return;
       case 'fail':
         if (matched) return;
@@ -165,6 +172,9 @@ export function findOpponent(mode: Mode, on: { found(link: Link): void; message(
         return state(f);
       case 'gone':
         return end();
+      case 'profile':
+        on.profile?.(f.profile);
+        return;
       case 'rtc':
         return rtc(f);
     }
@@ -214,7 +224,8 @@ export function findOpponent(mode: Mode, on: { found(link: Link): void; message(
     if (ws.readyState === WebSocket.OPEN) ws.send(raw);
   }
 
-  ws.onopen = () => out(mode.kind === 'queue' ? { op: 'find', mode: 'queue' } : { op: 'find', mode: mode.kind, code: mode.code });
+  ws.onopen = () =>
+    out({ op: 'find', mode: mode.kind, ...(mode.kind === 'queue' ? {} : { code: mode.code }), ...(token ? { token } : {}) });
   ws.onmessage = (e) => frame(e.data);
   ws.onclose = end;
   ws.onerror = end;

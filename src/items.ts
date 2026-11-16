@@ -25,24 +25,32 @@ export interface ItemDef {
   color?: number;
   /** Armour: share of a blow to each body zone that this piece turns away. */
   covers?: Partial<Record<Zone, number>>;
+  /** Gold, if the shop sells it (server/shop.ts holds the server's copy of these prices). */
+  price?: number;
 }
 
 const defs: ItemDef[] = [
   { id: 'rudis', name: 'Wooden sword', desc: 'Training sword. Heavy, blunt, and yours until you earn better.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#b9793f', power: 1, blade: [0.1, 0.83], edge: 0.3 },
-  { id: 'gladius', name: 'Short sword', desc: 'Iron sword of the legions. Shorter than the wooden one, and hits far harder.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#cfd3da', power: 1.7, blade: [0.1, 0.64], edge: 1 },
+  { id: 'gladius', price: 400, name: 'Short sword', desc: 'Iron sword of the legions. Shorter than the wooden one, and hits far harder.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#cfd3da', power: 1.7, blade: [0.1, 0.64], edge: 1 },
   { id: 'subligaculum', name: 'Loincloth', desc: 'Undyed linen. What every slave is issued.', slot: 'garb', stack: 1, icon: 'cloth', tint: '#dccdaa', color: 0xd9c9a6 },
-  { id: 'subligaculum_red', name: 'Red loincloth', desc: 'Loincloth dyed with madder root. The crowd can pick you out from the top row.', slot: 'garb', stack: 1, icon: 'cloth', tint: '#b33a34', color: PALETTE.crimson },
-  { id: 'cord', name: 'Rope belt', desc: 'A length of rope, knotted at the hip.', slot: 'belt', stack: 1, icon: 'belt', tint: '#b89a62' },
-  { id: 'balteus', name: 'Leather belt', desc: 'Broad belt with a bronze buckle and studs.', slot: 'belt', stack: 1, icon: 'belt', tint: '#8a5433', covers: { torso: 0.08 } },
-  { id: 'tunica', name: 'Tunic', desc: 'Coarse undyed wool, sewn at the shoulders and belted at the waist. Falls to mid-thigh.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#cdb98f', color: 0xc8b48a, covers: { torso: 0.12, thigh: 0.1 } },
-  { id: 'tunica_russa', name: 'Red tunic', desc: 'Wool tunic dyed russet. Hides the blood.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#8c3f33', color: 0x83392e, covers: { torso: 0.12, thigh: 0.1 } },
-  { id: 'galea', name: 'Helmet', desc: 'Bronze helmet with cheek pieces, a neck guard and a horsehair crest.', slot: 'head', stack: 1, icon: 'helmet', tint: '#c9954a', covers: { head: 0.8, neck: 0.4 } },
-  { id: 'pectorale', name: 'Chest plate', desc: 'Square bronze plate over the heart, held by leather straps.', slot: 'chest', stack: 1, icon: 'plate', tint: '#c9954a', covers: { torso: 0.55 } },
-  { id: 'manica', name: 'Arm guard', desc: 'Banded leather sleeve with a bronze shoulder cap, for the sword arm.', slot: 'arm', stack: 1, icon: 'arm', tint: '#8a5433', covers: { armR: 0.65 } },
-  { id: 'ocreae', name: 'Greaves', desc: 'Pair of bronze greaves, knee to ankle.', slot: 'legs', stack: 1, icon: 'greave', tint: '#c9954a', covers: { leg: 0.7 } },
+  { id: 'subligaculum_red', price: 40, name: 'Red loincloth', desc: 'Loincloth dyed with madder root. The crowd can pick you out from the top row.', slot: 'garb', stack: 1, icon: 'cloth', tint: '#b33a34', color: PALETTE.crimson },
+  { id: 'cord', price: 30, name: 'Rope belt', desc: 'A length of rope, knotted at the hip.', slot: 'belt', stack: 1, icon: 'belt', tint: '#b89a62' },
+  { id: 'balteus', price: 100, name: 'Leather belt', desc: 'Broad belt with a bronze buckle and studs.', slot: 'belt', stack: 1, icon: 'belt', tint: '#8a5433', covers: { torso: 0.08 } },
+  { id: 'tunica', price: 60, name: 'Tunic', desc: 'Coarse undyed wool, sewn at the shoulders and belted at the waist. Falls to mid-thigh.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#cdb98f', color: 0xc8b48a, covers: { torso: 0.12, thigh: 0.1 } },
+  { id: 'tunica_russa', price: 80, name: 'Red tunic', desc: 'Wool tunic dyed russet. Hides the blood.', slot: 'tunic', stack: 1, icon: 'tunic', tint: '#8c3f33', color: 0x83392e, covers: { torso: 0.12, thigh: 0.1 } },
+  { id: 'galea', price: 300, name: 'Helmet', desc: 'Bronze helmet with cheek pieces, a neck guard and a horsehair crest.', slot: 'head', stack: 1, icon: 'helmet', tint: '#c9954a', covers: { head: 0.8, neck: 0.4 } },
+  { id: 'pectorale', price: 350, name: 'Chest plate', desc: 'Square bronze plate over the heart, held by leather straps.', slot: 'chest', stack: 1, icon: 'plate', tint: '#c9954a', covers: { torso: 0.55 } },
+  { id: 'manica', price: 200, name: 'Arm guard', desc: 'Banded leather sleeve with a bronze shoulder cap, for the sword arm.', slot: 'arm', stack: 1, icon: 'arm', tint: '#8a5433', covers: { armR: 0.65 } },
+  { id: 'ocreae', price: 250, name: 'Greaves', desc: 'Pair of bronze greaves, knee to ankle.', slot: 'legs', stack: 1, icon: 'greave', tint: '#c9954a', covers: { leg: 0.7 } },
   { id: 'denarius', name: 'Silver coin', desc: 'Silver coin. Enough of these buys a man his freedom.', stack: 99, icon: 'coin', tint: '#d9dbe0' },
 ];
 export const ITEMS: Record<string, ItemDef> = Object.fromEntries(defs.map((d) => [d.id, d]));
+/** What every gladiator starts with, free: everything else is bought in the shop. */
+export const STARTER = ['rudis', 'subligaculum'];
+/** The shop's stock, cheapest first. */
+export const SHOP = defs.filter((d) => d.price !== undefined).sort((a, b) => a.price! - b.price!);
+/** Every item a gladiator can own (the admin owns them all). */
+export const ALL_GEAR = [...STARTER, ...SHOP.map((d) => d.id)];
 
 // ------------------------------------------------------------------ icons
 
