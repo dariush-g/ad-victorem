@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Ad Victorem</title>
+    <title>Gladiators</title>
     <style>
       html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
       canvas { display: block; }
@@ -11,7 +11,6 @@
         font-family: 'Trajan Pro', 'Cinzel', Georgia, 'Times New Roman', serif; text-transform: uppercase;
         letter-spacing: 2px; text-shadow: 2px 2px 0 #1a1210, -1px -1px 0 #1a1210, 1px -1px 0 #1a1210, -1px 1px 0 #1a1210; }
       #rank { position: absolute; left: 28px; top: 20px; }
-      #rank .title { font-size: 26px; font-weight: bold; color: #f0c050; }
       #rank .sub { font-size: 13px; opacity: 0.9; }
       .prompt b { color: #f0c050; }
       #menu { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(20, 12, 10, 0.55);
@@ -204,7 +203,7 @@
   </head>
   <body>
     <div id="hud">
-      <div id="rank"><div class="title">Servus</div><div class="sub">Slave · Wooden sword</div></div>
+      <div id="rank"><div class="sub">Slave · Wooden sword</div></div>
       <div id="foe-name" hidden></div>
       <div id="foe" hidden><span class="foe-title">Opponent</span><div class="bar hp"><i></i></div></div>
       <div id="match"></div>
@@ -220,7 +219,7 @@
     </div>
     <div id="start">
       <div class="start-title">
-        <h1>Ad Victorem</h1>
+        <h1>Gladiators</h1>
         <div class="start-sub">Fight for your freedom</div>
       </div>
       <div class="start-panels">
@@ -269,7 +268,7 @@
     </div>
     <div id="menu" hidden>
       <div class="menu-box">
-        <h1>Ad Victorem</h1>
+        <h1>Gladiators</h1>
         <div class="menu-actions">
           <button data-act="resume">Resume</button>
           <button data-act="search">Find opponent</button>

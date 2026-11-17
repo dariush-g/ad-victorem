@@ -73,7 +73,7 @@ export function spendPoint(c: Career, stat: StatName): boolean {
 }
 
 // --- the guest's career, in this browser only ---
-const LOCAL_KEY = 'ad-victorem-career';
+const LOCAL_KEY = 'gladiators-career';
 
 export function loadLocalCareer(): Career {
   try {
@@ -92,7 +92,7 @@ export function saveLocalCareer(c: Career | null) {
 }
 
 // --- the guest's items: what they own (the starting kit plus purchases) and how it was arranged ---
-const OWNED_KEY = 'ad-victorem-owned', GEAR_KEY = 'ad-victorem-gear';
+const OWNED_KEY = 'gladiators-owned', GEAR_KEY = 'gladiators-gear';
 
 export function loadLocalOwned(starter: string[]): string[] {
   try {

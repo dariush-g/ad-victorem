@@ -29,7 +29,7 @@ export interface Profile {
 
 type Reply = { ok: boolean; why?: string; [k: string]: unknown };
 
-const TOKEN_KEY = 'ad-victorem-session';
+const TOKEN_KEY = 'gladiators-session';
 const TIMEOUT_MS = 10_000, IDLE_MS = 30_000;
 
 let sock: WebSocket | null = null, opening: Promise<WebSocket> | null = null, idle = 0, nextId = 1;

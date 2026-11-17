@@ -1,5 +1,5 @@
 /**
- * Ad Victorem duel server: matchmaking plus a message relay between the two fighters of each pair.
+ * Gladiators duel server: matchmaking plus a message relay between the two fighters of each pair.
  *
  * The server does not simulate the fight. Each client stays the authority over its own fighter
  * (see multiplayer.md); the server only pairs players and forwards what one says to the other.

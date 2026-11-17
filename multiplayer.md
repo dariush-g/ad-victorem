@@ -1,6 +1,6 @@
 # Multiplayer
 
-Ad Victorem duels are one-on-one, through a small duel server. The server pairs players and relays their messages; it does **not** simulate the fight. Each browser simulates its own fighter and trusts what the other side reports about theirs.
+Gladiators duels are one-on-one, through a small duel server. The server pairs players and relays their messages; it does **not** simulate the fight. Each browser simulates its own fighter and trusts what the other side reports about theirs.
 
 Code:
 - `src/net.ts`: client connections, matchmaking requests, keep-alive.
@@ -188,13 +188,13 @@ The server lives in `server/` and builds with `tsc` to `server/dist/server.js`, 
 
 **Smoke test:** from `server/`, run `npm run smoke -- ws://localhost:8080`. It pairs two fake clients and checks events, state (over UDP if the server offers it, otherwise the WebSocket) and the partner-left notice.
 
-**Class box (codehw):** the repo is cloned to `~/projects/ad-victorem`, and the server runs as the `svc` service `<STUDENT>-duel` on the student's `$PORT`. The box's Caddy proxies `https://<STUDENT>.api.codehw.net` (and `wss://`) to it, with TLS and CORS. To deploy what is pushed to GitHub:
+**Class box (codehw):** the repo is cloned to `~/projects/gladiators`, and the server runs as the `svc` service `<STUDENT>-duel` on the student's `$PORT`. The box's Caddy proxies `https://<STUDENT>.api.codehw.net` (and `wss://`) to it, with TLS and CORS. To deploy what is pushed to GitHub:
 
 ```
 DUEL_HOST=<class account>@<server> STUDENT=<student> server/deploy.sh
 ```
 
-It clones the repo on first use, then pulls, rebuilds and restarts. Keep the account and address in your shell environment, never in the repo (class rules). On the box itself, `cd ~/projects/ad-victorem && git pull && server/run.sh` does the same thing. Logs: `svc logs duel`.
+It clones the repo on first use, then pulls, rebuilds and restarts. Keep the account and address in your shell environment, never in the repo (class rules). On the box itself, `cd ~/projects/gladiators && git pull && server/run.sh` does the same thing. Logs: `svc logs duel`.
 
 The class box's firewall only allows TCP 22, 80 and 443, so the server runs there without `UDP_PORT`, and all traffic, state included, goes over the WebSocket. Enabling UDP would need a teacher to open one UDP port to the student, plus `UDP_PORT=<port>` in the service.
 

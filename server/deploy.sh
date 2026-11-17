@@ -9,6 +9,6 @@ REPO=${DUEL_REPO:-$(git -C "$(dirname "$0")" remote get-url origin)}
 BRANCH=${DUEL_BRANCH:-$(git -C "$(dirname "$0")" rev-parse --abbrev-ref HEAD)}
 ssh -o SetEnv=STUDENT="$STUDENT" "$DUEL_HOST" "set -e
   cd ~/projects
-  [ -d ad-victorem/.git ] || git clone '$REPO' ad-victorem
-  cd ad-victorem && git fetch --quiet origin && git checkout --quiet '$BRANCH' && git pull --quiet --ff-only origin '$BRANCH'
+  [ -d gladiators/.git ] || git clone '$REPO' gladiators
+  cd gladiators && git fetch --quiet origin && git checkout --quiet '$BRANCH' && git pull --quiet --ff-only origin '$BRANCH'
   server/run.sh"

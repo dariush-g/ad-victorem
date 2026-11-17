@@ -878,7 +878,7 @@ const menu = document.getElementById('menu')!;
 const menuBtn = (act: string) => menu.querySelector<HTMLButtonElement>(`[data-act="${act}"]`)!;
 const joinRow = menu.querySelector<HTMLElement>('[data-show="join"]')!, joinInput = document.getElementById('join-code') as HTMLInputElement;
 const nameInput = document.getElementById('player-name') as HTMLInputElement;
-const NAME_KEY = 'ad-victorem-name';
+const NAME_KEY = 'gladiators-name';
 try {
   nameInput.value = cleanName(localStorage.getItem(NAME_KEY));
 } catch {}

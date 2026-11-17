@@ -1,5 +1,5 @@
 {
-  "name": "ad-victorem-server",
+  "name": "gladiators-server",
   "private": true,
   "type": "module",
   "scripts": {
