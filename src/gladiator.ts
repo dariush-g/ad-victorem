@@ -12,11 +12,11 @@ const MODEL_DIR = '/models/gladiator/';
 
 // --- movement ---
 const WALK = 1.5, RUN = 5.0, GRAVITY = 16; // gait reference speeds (the stride blends from a walk toward a run between them)
-const TRAVEL = 2.4; // top speed, m/s, when nobody is near
-const WARY = 1.7; // top speed while squared up to an enemy (stepping backward: a bit less)
-// stepping sideways: pace (share of WARY), stride length (share of a forward one) and how far apart the
-// feet part (share of the stride). Cadence follows speed / stride, so these set how hurried it looks.
-const SIDE_SPEED = 0.8, SIDE_STRIDE = 0.85, SIDE_SPREAD = 0.75;
+const TRAVEL = 2.4; // walking top speed, m/s
+const JOG = 3.9; // top speed with Shift held, m/s
+// stepping sideways: stride length (share of a forward one) and how far apart the feet part (share of
+// the stride). Cadence follows speed / stride, so these set how hurried it looks.
+const SIDE_STRIDE = 0.85, SIDE_SPREAD = 0.75;
 const ACCEL = 16, DECEL = 20, AIR_ACCEL = 3, TURN = 9;
 const BACKPEDAL = 0.62; // backward walking speed, as a fraction of WALK
 const SETTLE_RATE = 7; // radians of gait phase per second while finishing the last step on stopping
@@ -28,7 +28,7 @@ export type Ground = (x: number, z: number) => number;
 export interface Controls {
   moveX: number; // world-space desired direction (unit or zero)
   moveZ: number;
-  /** Shift: face where you walk instead of squaring up to a nearby enemy. */
+  /** Shift: jog, faster than the walk, facing where you go. */
   free?: boolean;
   attack: boolean; // attack pressed this frame (buffered inside, so an early press still counts)
   attackHeld?: boolean; // attack button still down: a held press becomes a heavy blow, and charges it
@@ -136,7 +136,6 @@ export class Gladiator {
   private charging = false; // a heavy is waiting at the top for the button to be let go
   private chargeLocal = false; // this heavy came from our own held press (else a remote replay, released by message)
   private chained = false; // the current move cut in on another one
-  private wary = false; // inside an enemy's guard radius
   /** The current roll: forward over the shoulder, backward over it, or sideways across the back (-1 right, 1 left). */
   private rollKind: 'fwd' | 'back' | 'side' = 'fwd';
   private rollSide = 1;
@@ -453,9 +452,13 @@ export class Gladiator {
     if (!w || !this.move || this.rag) return false;
     return this.moveT >= w[0] && this.moveT <= w[1];
   }
+  /** Something in hand: bare-fisted fighters can only punch (no block, no parry). */
+  get armed() {
+    return !!this.worn.weapon;
+  }
   /** The attacks on offer: sword swings with a weapon in hand, punches without. */
   private get moves() {
-    return this.worn.weapon ? ATTACKS : PUNCHES;
+    return this.armed ? ATTACKS : PUNCHES;
   }
   private moveDef(kind: MoveKind): Move {
     return isAttack(kind) ? this.moves[kind] : REACTIONS[kind];
@@ -470,7 +473,7 @@ export class Gladiator {
     // cut straight from one move into the next (a combo, a dodge out of a swing): start the new one from
     // the pose the body is in now, at full weight, instead of fading back toward the stance first
     this.chained = this.move !== null;
-    if (this.chained) for (const ch of CHANNELS) this.chainFrom[ch] = this.smoothed[ch] ?? READY[ch];
+    if (this.chained) for (const ch of CHANNELS) this.chainFrom[ch] = this.smoothed[ch] ?? (this.armed ? READY : READY_BARE)[ch];
     this.move = this.moveDef(kind);
     this.moveKind = kind;
     this.moveT = 0;
@@ -495,15 +498,6 @@ export class Gladiator {
     this.started.push(kind);
   }
   /** Where a swing should face: the opponent, if they stand close and roughly where you're looking; otherwise your aim. */
-  private assistYaw(c: Controls) {
-    const t = c.target;
-    if (!t) return c.aimYaw;
-    const dx = t.x - this.pos.x, dz = t.z - this.pos.z;
-    if (Math.hypot(dx, dz) > ASSIST_RANGE) return c.aimYaw;
-    const want = Math.atan2(dx, dz);
-    const d = Math.atan2(Math.sin(want - c.aimYaw), Math.cos(want - c.aimYaw));
-    return Math.abs(d) < ASSIST_CONE ? want : c.aimYaw;
-  }
   /**
    * Start a given move now, whatever the controls say: replaying a remote fighter, or a reaction
    * to being struck (stagger, recoil off a guard, reeling from a parry).
@@ -618,7 +612,7 @@ export class Gladiator {
       l.bone.quaternion.copy(_q2).multiply(_q);
     }
     for (const f of this.fingers) {
-      const curl = f.right ? FIST_CURL * f.weight : this.curlL * f.relaxed;
+      const curl = f.right && this.armed ? FIST_CURL * f.weight : this.curlL * f.relaxed;
       f.bone.quaternion.copy(f.bind).multiply(_q.setFromAxisAngle(f.axis, curl));
     }
   }
@@ -639,25 +633,24 @@ export class Gladiator {
     const b = this.buffer;
     b.attack = c.attack ? BUFFER : Math.max(0, b.attack - dt);
     b.dodge = c.dodge ? BUFFER : Math.max(0, b.dodge - dt);
-    b.parry = c.parry ? BUFFER : Math.max(0, b.parry - dt);
+    b.parry = c.parry && this.armed ? BUFFER : Math.max(0, b.parry - dt);
     if (c.attack) this.pressT = 0;
     else if (this.pressT >= 0) this.pressT += dt;
     if (!c.attackHeld) this.pressT = -1; // let go: no heavy from this press
-    this.blockHeld = !!c.block;
+    this.blockHeld = !!c.block && this.armed;
 
     // --- starting moves: free, or in the recovery of a move that allows cancelling into this one ---
     const able = !gettingUp && grounded && c.canAct !== false;
     const mt = this.move ? this.moveT / this.move.time : 1;
     const recovered = !this.move || (this.move.cancel !== undefined && mt >= this.move.cancel);
-    const aimYaw = this.assistYaw(c);
+    const aimYaw = c.aimYaw; // no lock-on: moves go where you aim
     if (able && b.dodge > 0 && recovered) {
       b.dodge = b.attack = 0;
       // dodge where you're steering; with no direction held, hop straight back
-      // (squared up to an enemy: keep facing them through it, and "straight back" means away from them)
-      const face = this.wary && !c.free ? this.facing : c.aimYaw;
+      const face = c.aimYaw;
       const dir = c.moveX !== 0 || c.moveZ !== 0 ? Math.atan2(c.moveX, c.moveZ) : face + Math.PI;
       this.begin('dodge', face, 0, dir);
-    } else if (able && b.parry > 0 && recovered) {
+    } else if (able && b.parry > 0 && recovered && this.armed) {
       b.parry = b.attack = 0;
       this.begin('parry', aimYaw);
     } else if (able && b.attack > 0 && recovered) {
@@ -692,23 +685,9 @@ export class Gladiator {
         }
         this.moveT += dt;
       }
-      // swings turn toward the opponent through the windup, so a small step aside doesn't make them miss
-      if (isAttack(this.moveKind) && this.moveT / m.time < m.strikeAt && c.target) {
-        const want = Math.atan2(c.target.x - this.pos.x, c.target.z - this.pos.z);
-        let d = want - this.facing;
-        d = Math.atan2(Math.sin(d), Math.cos(d));
-        if (Math.abs(d) < TRACK_CONE) this.facing += clamp(d, -TRACK_RATE * dt, TRACK_RATE * dt);
-      }
       if (this.moveT >= m.time) this.move = null;
     }
 
-    // --- wariness: inside the guard radius of an enemy, stay squared up to them ---
-    const tg = c.target;
-    if (tg) {
-      const d = Math.hypot(tg.x - this.pos.x, tg.z - this.pos.z);
-      this.wary = d < (this.wary ? GUARD_EXIT : GUARD_ENTER);
-    } else this.wary = false;
-    const faceFoe = this.wary && !c.free && tg;
 
     // --- movement ---
     const moving = !gettingUp && !this.move && (c.moveX !== 0 || c.moveZ !== 0);
@@ -719,12 +698,9 @@ export class Gladiator {
       this.vel.x = Math.sin(yaw) * sp;
       this.vel.z = Math.cos(yaw) * sp;
     } else {
-      // finite acceleration, so starts, stops and turns carry weight; the guard slows you to a wary shuffle
-      // facing the enemy, stepping away from them is a little slower than stepping in or around
-      const along = faceFoe ? c.moveX * Math.sin(this.facing) + c.moveZ * Math.cos(this.facing) : 1;
+      // finite acceleration, so starts, stops and turns carry weight; the guard slows you to a shuffle, Shift jogs
       const top =
-        (this.blockHeld ? WALK * BLOCK_SPEED : faceFoe ? WARY * lerp(1, 0.75, Math.max(0, -along)) * lerp(1, SIDE_SPEED, 1 - along * along) : c.backpedal ? WALK * BACKPEDAL : TRAVEL) *
-        this.speedMul;
+        (this.blockHeld ? WALK * BLOCK_SPEED : c.free ? JOG : c.backpedal ? WALK * BACKPEDAL : TRAVEL) * this.speedMul;
       const tx = moving ? c.moveX * top : 0, tz = moving ? c.moveZ * top : 0;
       const dvx = tx - this.vel.x, dvz = tz - this.vel.z;
       const dv = Math.hypot(dvx, dvz);
@@ -750,12 +726,10 @@ export class Gladiator {
     this.onGround = grounded;
     this.squat *= Math.exp(-7 * dt);
 
-    // --- facing: travel direction, or held on the aim while backing up ---
-    // squared up to a nearby enemy whichever way you step (Shift: face where you walk); otherwise the
-    // way you travel, or held on your aim while backing up or with the guard up
+    // --- facing: the way you travel, or held on your aim while backing up or with the guard up ---
+    // (no lock-on: an enemy nearby never turns you)
     if (!this.move && !gettingUp) {
-      if (faceFoe) this.facing = Math.atan2(faceFoe.x - this.pos.x, faceFoe.z - this.pos.z);
-      else if (moving) this.facing = (c.backpedal || this.blockHeld) && !c.free ? c.aimYaw : Math.atan2(c.moveX, c.moveZ);
+      if (moving) this.facing = (c.backpedal || this.blockHeld) && !c.free ? c.aimYaw : Math.atan2(c.moveX, c.moveZ);
       else if (this.blockHeld) this.facing = c.aimYaw;
     }
     let diff = this.facing - this.root.rotation.y;
@@ -843,7 +817,9 @@ export class Gladiator {
     const shift = Math.sin(t * 0.7); // weight drifting from foot to foot
     // still pose: arms hanging at ease, or the ready stance while on guard
     const guard = ease(this.ease('guard', this.onGuard ? 1 : 0, this.onGuard ? 7 : 3.5, dt));
-    for (const ch of CHANNELS) _still[ch] = lerp(RELAXED[ch], READY[ch], guard);
+    const armed = this.armed;
+    const rest = armed ? RELAXED : RELAXED_BARE, ready = armed ? READY : READY_BARE;
+    for (const ch of CHANNELS) _still[ch] = lerp(rest[ch], ready[ch], guard);
     const live = 0.35 + 0.65 * guard; // hanging arms drift less than a held guard
     const bounce = Math.sin(t * 2.7) * guard; // fighter's weight bounce on the knees
     const swordBob = (Math.sin(t * 1.3 + 0.4) + 0.4 * Math.sin(t * 2.9)) * live;
@@ -856,12 +832,21 @@ export class Gladiator {
     const R = _still;
     const pose: Pose = {
       // right arm: sword up in guard, or a relaxed carry swinging with the stride
-      rS: lerp(R.rS, -0.12 + cph * swing * 0.6, amt) + (breath * 0.025 + swordBob * 0.045) * idle,
-      rO: lerp(R.rO, -0.28, amt) + Math.sin(t * 0.9 + 1.2) * 0.03 * idle,
+      // (bare-handed: the right arm mirrors the left, opposite in the stride, and the wrist stays straight)
+      rS: armed
+        ? lerp(R.rS, -0.12 + cph * swing * 0.6, amt) + (breath * 0.025 + swordBob * 0.045) * idle
+        : lerp(R.rS, cph * swing + 0.04, amt) + (breath * 0.025 + swordBob * 0.04) * idle,
+      rO: armed
+        ? lerp(R.rO, -0.28, amt) + Math.sin(t * 0.9 + 1.2) * 0.03 * idle
+        : lerp(R.rO, -(0.13 + 0.06 * run - pos(-cph) * 0.05), amt) + Math.sin(t * 0.9 + 1.2) * 0.03 * idle,
       rY: lerp(R.rY, 0, amt),
-      rE: lerp(R.rE, -0.7 - run * 0.5 - pos(-lagE) * 0.3, amt) + Math.sin(t * 1.3 + 1.3) * 0.07 * live * idle,
+      rE: armed
+        ? lerp(R.rE, -0.7 - run * 0.5 - pos(-lagE) * 0.3, amt) + Math.sin(t * 1.3 + 1.3) * 0.07 * live * idle
+        : lerp(R.rE, -(0.42 + run) - pos(-lagE) * 0.4, amt) + Math.sin(t * 1.3 + 1.3) * 0.08 * live * idle,
       rR: 0,
-      rW: lerp(R.rW, 0.08 + lagW * 0.12, amt) + Math.sin(t * 1.7 + 0.2) * 0.09 * live * idle, // sword tip circles
+      rW: armed
+        ? lerp(R.rW, 0.08 + lagW * 0.12, amt) + Math.sin(t * 1.7 + 0.2) * 0.09 * live * idle // sword tip circles
+        : lerp(R.rW, 0, amt),
       // left arm: forward for balance, or a pendulum trailing the stride
       lS: lerp(R.lS, -cph * swing + 0.04, amt) + (breath * 0.025 + guardBob * 0.04) * idle,
       lO: lerp(R.lO, 0.13 + 0.06 * run - pos(cph) * 0.05, amt) + Math.sin(t * 0.8 + 0.5) * 0.03 * idle,
@@ -876,7 +861,7 @@ export class Gladiator {
       width: R.width * idle,
     };
     if (atk) {
-      const a = samplePose(atk, at, this.chained ? this.chainFrom : null);
+      const a = samplePose(atk, at, this.chained ? this.chainFrom : null, ready);
       // aim: the whole swing tilts up or down at the shoulder; a low swing also bends at the waist and
       // knees to get under the guard, a high one comes more upright
       const aim = isAttack(this.moveKind) ? this.attackAim : 0;
@@ -1487,15 +1472,21 @@ const BLOCK_SPEED = 0.75, BLOCK_RATE = 14; // walking pace with the guard up (sh
 const BUFFER = 0.35; // seconds a press waits for the fighter to be free
 const HOLD_HEAVY = 0.15; // seconds the attack button must stay down to turn a light into a heavy
 export const HEAVY_CHARGE = 0.9; // longest a heavy can be held at the top, seconds
-// soft aim assist: a swing turns toward an opponent this close and this far off the aim (radians), then
-// keeps tracking them through its windup at up to TRACK_RATE rad/s while they're within TRACK_CONE
-const ASSIST_RANGE = 4.5, ASSIST_CONE = 0.9, TRACK_RATE = 4.0, TRACK_CONE = 1.6;
 
 const RELAXED: Pose = {
   rS: 0.04, rO: -0.1, rY: 0, rE: -0.22, rR: 0, rW: 0.42,
   lS: 0.03, lO: 0.09, lE: -0.2,
   twist: 0.03, lean: 0.02, roll: 0, drop: 0.015, hipYaw: -0.08,
   fzL: 0.07, fzR: -0.05, width: 0.02,
+};
+/** Bare-handed at ease: same stance, the right wrist hangs straight instead of cocked for a hilt. */
+const RELAXED_BARE: Pose = { ...RELAXED, rW: 0, rE: -0.2, rO: -0.09 };
+/** Bare-handed ready stance: a boxer's guard, both fists up by the chin, elbows in, left a little ahead. */
+const READY_BARE: Pose = {
+  ...READY,
+  rS: -0.7, rO: -0.38, rY: 0, rE: -2.1, rR: 0, rW: 0,
+  lS: -0.9, lO: 0.3, lE: -1.9,
+  twist: 0.0, hipYaw: -0.4,
 };
 const GUARD_ENTER = 4.5, GUARD_EXIT = 5.5; // metres to the nearest enemy
 const GUARD_HOLD = 1.5; // seconds the guard stays up after a swing
@@ -1506,18 +1497,18 @@ const _still = { ...READY };
  * Pose of a move at t = 0..1. Before the first key: held there, or (`from`, a move chained onto another)
  * swept from that pose into it.
  */
-function samplePose(atk: Move, t: number, from: Pose | null = null): Pose {
+function samplePose(atk: Move, t: number, from: Pose | null = null, base: Pose = READY): Pose {
   const keys = atk.keys;
   if (from && t < keys[0][0]) {
     const e = ease(t / keys[0][0]), k0 = keys[0][1];
-    for (const ch of CHANNELS) _pose[ch] = lerp(from[ch], k0[ch] ?? READY[ch], e);
+    for (const ch of CHANNELS) _pose[ch] = lerp(from[ch], k0[ch] ?? base[ch], e);
     return _pose;
   }
   let i = 0;
   while (i < keys.length - 2 && t > keys[i + 1][0]) i++;
   const [t0, a] = keys[i], [t1, b] = keys[i + 1];
   const e = ease(clamp((t - t0) / (t1 - t0), 0, 1));
-  for (const ch of CHANNELS) _pose[ch] = lerp(a[ch] ?? READY[ch], b[ch] ?? READY[ch], e);
+  for (const ch of CHANNELS) _pose[ch] = lerp(a[ch] ?? base[ch], b[ch] ?? base[ch], e);
   return _pose;
 }
 

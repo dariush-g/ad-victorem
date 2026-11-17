@@ -154,10 +154,10 @@ export class Outfit {
       const color = ITEMS[id]?.color ?? PALETTE.linen, f = this.tunicFit;
       this.tunicTop = buildTunicTop(this.rig.body, mat(color, { rim: 0.2, surface: 'cloth', side: THREE.DoubleSide }), f.cutY, f.neckY, f.shoulders, f.elbows);
       // skirt: a tube of cloth gathered at the waist, hanging to mid-thigh
-      const cols = 36, out = 0.013, pins: THREE.Vector3[] = [];
+      const cols = 18, out = 0.013, pins: THREE.Vector3[] = [];
       for (let c = 0; c < cols; c++) pins.push(onWaist((c / cols) * Math.PI * 2 + Math.PI, BELT_Y - 0.004, out)); // seam at the back
       const a = (WAIST_R + out) * FIT.sx, b = (WAIST_R + out) * FIT.sz, round = 2 * Math.PI * Math.sqrt((a * a + b * b) / 2);
-      this.skirt = new ClothPanel(cols, 12, round * 1.22, TUNIC_SKIRT, mat(color, { rim: 0.2, surface: 'cloth', side: THREE.DoubleSide, rest: true }), this.hips, pins, true, this.guard);
+      this.skirt = new ClothPanel(cols, 7, round * 1.22, TUNIC_SKIRT, mat(color, { rim: 0.2, surface: 'cloth', side: THREE.DoubleSide, rest: true }), this.hips, pins, true, this.guard);
       this.root.add(this.skirt.mesh);
     }
     // the loincloth's hanging panels tuck away under a tunic, and the belt goes over it
@@ -224,12 +224,12 @@ export class Outfit {
 
     // hanging panels, pinned along an arc of the waist and cut wider than the arc so they fold
     const hang = (dir: number, arc: number, width: number, length: number) => {
-      const cols = 13, pins: THREE.Vector3[] = [];
+      const cols = 7, pins: THREE.Vector3[] = [];
       for (let c = 0; c < cols; c++) {
         const th = (c / (cols - 1) - 0.5) * arc;
         pins.push(onWaist(dir > 0 ? th : Math.PI + th, FIT.y + 0.072, 0.007));
       }
-      const panel = new ClothPanel(cols, 12, width, length, sheet, this.hips, pins, false, this.guard);
+      const panel = new ClothPanel(cols, 7, width, length, sheet, this.hips, pins, false, this.guard);
       this.root.add(panel.mesh);
       this.panels.push(panel);
     };

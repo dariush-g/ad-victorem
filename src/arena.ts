@@ -572,8 +572,14 @@ export function createArena(scene: THREE.Scene) {
   return { update, touch, enemyDistance, nearestEnemy, setGate, gateOpen, setPractice };
 }
 
+/** Dunes and wall drift on (false: the sand is a flat floor at height 0). */
+const SAND_RELIEF = false;
+/** Wind-ripple bands drawn over the sand (false: plain sand). */
+const SAND_RIPPLES = false;
+
 /** Sand surface height: low dunes, scuffed hollows, drift piled against the wall. */
 export function sandHeight(x: number, z: number): number {
+  if (!SAND_RELIEF) return 0;
   const d = Math.hypot(x, z);
   const dunes =
     0.14 * Math.sin(x * 0.33 + 1.3) * Math.cos(z * 0.29 - 0.4) +
@@ -640,7 +646,7 @@ function createSand(): THREE.Mesh {
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.computeVertexNormals();
 
-  const sandMat = mat(0xffffff, { vertexColors: true, map: ripples, surface: 'sand' });
+  const sandMat = mat(0xffffff, { vertexColors: true, map: SAND_RIPPLES ? ripples : undefined, surface: 'sand' });
   const sand = new THREE.Mesh(geo, sandMat);
   sand.receiveShadow = true;
   return sand;

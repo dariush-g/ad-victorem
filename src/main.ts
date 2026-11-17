@@ -1199,10 +1199,10 @@ function update(dt: number) {
   const sin = Math.sin(yaw), cos = Math.cos(yaw);
   // stamina gates effort: no swing, dodge or parry without the breath for it
   blockHeld = keys.has('KeyE') && !player.ragdolled;
-  // Shift: face where you walk, instead of squaring up to a nearby enemy
+  // Shift: jog (faster, facing where you go)
   const free = keys.has('ShiftLeft') || keys.has('ShiftRight');
   const move = { x: (-sin * f + cos * s) / len, z: (-cos * f - sin * s) / len };
-  const backpedal = f < 0 && !free; // S without Shift: back up, still facing forward
+  const backpedal = f < 0 && !free; // S without Shift: back up, still facing forward; with Shift, turn and jog
   const foeNear = foe.root.visible ? foe.pos.distanceTo(player.pos) : Infinity;
   // out of breath: say so plainly instead of silently ignoring the press (the press stays buffered a moment)
   if ((pressed.attack || pressed.dodge || pressed.parry) && !vitals.canAct) flashStamina();

@@ -18,7 +18,8 @@ export interface Colliders {
   ground: (x: number, z: number) => number;
 }
 
-const GRAVITY = 11, DRAG = 1.6, SUBSTEPS = 2, ITERATIONS = 5, SKIN = 0.012;
+// kept light: one step, a few relaxation passes, collisions once per step (the pixel look hides the rest)
+const GRAVITY = 11, DRAG = 1.6, SUBSTEPS = 1, ITERATIONS = 3, SKIN = 0.012;
 /** Share of the wearer's own motion the cloth is simply carried along with; the rest it has to catch up on (lag, swing). */
 const FOLLOW = 0.86;
 /** Air resistance from moving: acceleration against the wearer's velocity, per m/s, and its ceiling. */
@@ -27,7 +28,7 @@ const _v = new THREE.Vector3(), _w = new THREE.Vector3(), _inv = new THREE.Matri
 
 /**
  * A rectangular sheet of fabric hanging from a row of pins: Verlet particles joined by
- * stretch, shear and bend constraints, simulated in world space so it lags, swings and
+ * stretch and shear constraints, simulated in world space so it lags, swings and
  * drapes over the legs as the wearer moves. The sheet is cut wider than the span of its
  * pins, so it gathers into folds.
  */
@@ -83,9 +84,6 @@ export class ClothPanel {
         join(r, c, 0, 1, 1);
         join(r, c, 1, 1, 0.6);
         join(r, c, 1, -1, 0.6);
-        // bend: resists sharp creases, keeps folds rounded
-        join(r, c, 2, 0, 0.25);
-        join(r, c, 0, 2, 0.3);
       }
 
     const index: number[] = [];
@@ -185,8 +183,8 @@ export class ClothPanel {
           p[a] += dx * k * wa; p[a + 1] += dy * k * wa; p[a + 2] += dz * k * wa;
           p[b] -= dx * k * wb; p[b + 1] -= dy * k * wb; p[b + 2] -= dz * k * wb;
         }
-        this.collide(col);
       }
+      this.collide(col);
     }
 
     // world → the mesh's parent space
