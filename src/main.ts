@@ -15,6 +15,7 @@ import { BASE_DAMAGE, ZONES, ZONE_LIST, protection, touchedPart } from './hits';
 import { Vitals } from './stats';
 import { createVitalBars, createCharacterSheet } from './character';
 import { createTurntable } from './portrait';
+import { renderIcons } from './icons';
 
 const SENS = 0.0022;
 // over-the-right-shoulder rig, in camera space relative to the character's upper chest
@@ -74,6 +75,7 @@ const blob = (() => {
 
 // --- inventory: bag + equipment. Gear is chosen in the gateway room and fixed once an opponent is found ---
 const inventory = new Inventory();
+renderIcons(); // every item's icon, drawn from its model, before anything shows one
 const ui = createInventoryUI(inventory);
 // --- attributes, health and stamina ---
 const vitals = new Vitals();

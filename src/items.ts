@@ -65,7 +65,12 @@ const ICON_PATHS: Record<ItemDef['icon'], string> = {
   arm: '<path d="M6 8q5-6 10-2l3 5-9 5z" fill="#c9954a"/><path d="M11 14l8-4 3 4-8 4z M14 19l8-4 3 4-8 4z M17 24l8-4 2 4-7 4z" fill="$C" stroke="#0005"/>',
   coin: '<circle cx="12" cy="19" r="7" fill="$C" stroke="#0004"/><circle cx="20" cy="13" r="7" fill="$C" stroke="#0004"/><circle cx="20" cy="13" r="4" fill="none" stroke="#0003"/>',
 };
+/** Icons rendered from each item's model at startup (icons.ts), by item id. */
+export const ICON_URLS: Record<string, string> = {};
+/** An item's icon: its rendered picture, or the flat drawing until that exists. */
 export function iconSVG(def: ItemDef) {
+  const url = ICON_URLS[def.id];
+  if (url) return `<img class="item-icon" src="${url}" alt="" draggable="false">`;
   return `<svg viewBox="0 0 32 32" width="100%" height="100%">${ICON_PATHS[def.icon].replaceAll('$C', def.tint)}</svg>`;
 }
 
