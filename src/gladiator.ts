@@ -384,27 +384,6 @@ export class Gladiator {
     this.root.rotation.y = this.facing;
   }
 
-  /**
-   * Stand square for the character sheet: arms straight out and feet together, or (`spread`)
-   * arms raised and legs apart. Only poses the rig — the next update() takes over again.
-   * Returns false while ragdolled.
-   */
-  posePortrait(spread: boolean): boolean {
-    if (this.rag) return false;
-    const { hips, armL, armR, legL, legR } = this;
-    hips.position.set(0, this.pelvisY, this.pelvisZ);
-    for (const j of this.joints) j.rotation.set(0, 0, 0);
-    const arm = Math.PI / 2 + (spread ? 0.42 : 0), leg = spread ? 0.3 : 0.03;
-    armL.upper.rotation.z = arm;
-    armR.upper.rotation.z = -arm;
-    this.weaponMount.visible = false; // empty hands for the study; update() brings it back
-    legL.upper.rotation.z = leg;
-    legR.upper.rotation.z = -leg;
-    this.root.updateMatrixWorld(true);
-    this.syncModel();
-    return true;
-  }
-
   /** Wear or wield an item (null = take it off). */
   equip(slot: Slot, id: string | null) {
     if (this.worn[slot] === id) return;

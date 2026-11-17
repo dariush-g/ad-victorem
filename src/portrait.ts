@@ -1,96 +1,110 @@
 import * as THREE from 'three';
 import type { Gladiator } from './gladiator';
-
-/** Framing shared by the render and the diagram drawn over it, in units of the figure's height. */
-export const FRAME = { margin: 0.07, circle: 0.608 }; // circle radius: navel-centred, touching the ground
-const VIEW = FRAME.circle * 2 + FRAME.margin * 2; // side of the square view, in heights
-
-const filmic = (c: number) => (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);
-const encode = (c: number) => (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055);
+import { createPost } from './post';
 
 /**
- * Renders the player alone — the real model, lit by the arena, wearing whatever is
- * equipped — front-on in the two poses of a proportion study, and composites them onto
- * a 2D canvas. Uses the game's renderer, so the figure looks exactly as it does in play.
+ * The player's live model on a turntable, for the character tab: drawn every frame (idle pose,
+ * swinging cloth, everything worn and wielded) through the game's pixel pass, with nothing else
+ * in the scene. Drag to turn and tilt, right-drag to move, scroll to zoom; it turns slowly by
+ * itself until grabbed.
  */
-export function createPortrait(renderer: THREE.WebGLRenderer, scene: THREE.Scene, player: Gladiator, size = 720) {
-  const target = new THREE.WebGLRenderTarget(size, size, { type: THREE.HalfFloatType, samples: 4 });
-  const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 30);
-  const raw = new Uint16Array(size * size * 4);
-  const layer = document.createElement('canvas');
-  layer.width = layer.height = size;
-  const lctx = layer.getContext('2d')!;
-  const image = lctx.createImageData(size, size);
-  const clear = new THREE.Color();
+export function createTurntable(renderer: THREE.WebGLRenderer, scene: THREE.Scene, player: Gladiator) {
+  const el = document.createElement('div');
+  el.className = 'turntable';
+  const canvas = el.appendChild(document.createElement('canvas'));
+  const hint = el.appendChild(document.createElement('div'));
+  hint.className = 'turntable-hint';
+  hint.textContent = 'Drag to turn · scroll to zoom';
+  hint.title = 'Right-drag or Shift-drag to move · double-click to reset';
+  const camera = new THREE.PerspectiveCamera(30, 1, 0.05, 50);
+  camera.rotation.order = 'YXZ';
+  const post = createPost(renderer, scene, camera);
+  const backdrop = new THREE.Color(0x17120f), clear = new THREE.Color();
+  const view = { yaw: 0.35, pitch: 0.08, zoom: 1, panX: 0, panY: 0, spin: true };
+  let lastW = 0, lastH = 0;
 
-  function shoot(spread: boolean) {
-    if (!player.posePortrait(spread)) return false;
-    const h = player.height, half = (VIEW * h) / 2, ry = player.root.rotation.y;
-    camera.left = -half; camera.right = half; camera.top = half; camera.bottom = -half;
-    camera.updateProjectionMatrix();
-    const cy = player.root.position.y + (FRAME.circle * h);
-    camera.position.set(player.root.position.x + Math.sin(ry) * 8, cy, player.root.position.z + Math.cos(ry) * 8);
-    camera.lookAt(player.root.position.x, cy, player.root.position.z);
+  // --- input on the canvas ---
+  let drag: { x: number; y: number; button: number } | null = null;
+  canvas.addEventListener('pointerdown', (e) => {
+    drag = { x: e.clientX, y: e.clientY, button: e.button };
+    view.spin = false;
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    drag.x = e.clientX;
+    drag.y = e.clientY;
+    if (drag.button === 2 || e.shiftKey) {
+      const k = (player.height * 1.2 * view.zoom) / Math.max(1, canvas.clientHeight);
+      view.panX -= dx * k;
+      view.panY += dy * k;
+      view.panX = THREE.MathUtils.clamp(view.panX, -0.8, 0.8);
+      view.panY = THREE.MathUtils.clamp(view.panY, -0.9, 0.9);
+    } else {
+      view.yaw -= dx * 0.01;
+      view.pitch = THREE.MathUtils.clamp(view.pitch + dy * 0.006, -0.5, 1.1);
+    }
+  });
+  const release = () => (drag = null);
+  canvas.addEventListener('pointerup', release);
+  canvas.addEventListener('pointercancel', release);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    view.zoom = THREE.MathUtils.clamp(view.zoom * Math.exp(e.deltaY * 0.0012), 0.35, 1.6);
+  }, { passive: false });
+  canvas.addEventListener('dblclick', () => Object.assign(view, { yaw: 0.35, pitch: 0.08, zoom: 1, panX: 0, panY: 0, spin: true }));
+
+  /** Render one frame of the turntable into its canvas. Call after the frame's update, before the main render. */
+  function draw(dt: number) {
+    const w = canvas.clientWidth, h = canvas.clientHeight, pr = renderer.getPixelRatio();
+    if (!w || !h || !player.root.visible || !el.isConnected) return;
+    if (w !== lastW || h !== lastH) {
+      lastW = w;
+      lastH = h;
+      canvas.width = Math.round(w * pr);
+      canvas.height = Math.round(h * pr);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      post.resize(w, h);
+    }
+    if (view.spin) view.yaw += dt * 0.5;
+
+    // orbit the fighter's middle, starting from in front of them
+    const hgt = player.height, root = player.root.position;
+    const dist = ((hgt * 0.62) / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))) * view.zoom;
+    const a = player.root.rotation.y + view.yaw, cp = Math.cos(view.pitch);
+    const target = new THREE.Vector3(root.x, root.y + hgt * 0.52, root.z);
+    camera.position.set(target.x + Math.sin(a) * cp * dist, target.y + Math.sin(view.pitch) * dist, target.z + Math.cos(a) * cp * dist);
+    camera.lookAt(target);
+    camera.translateX(view.panX * hgt * 0.5);
+    camera.translateY(view.panY * hgt * 0.5);
 
     // everything but the player and the lights sits this one out
     const hidden = scene.children.filter((o) => o !== player.root && !(o as THREE.Light).isLight && o.visible);
     for (const o of hidden) o.visible = false;
-    const { background, fog } = scene, alpha = renderer.getClearAlpha(), auto = renderer.shadowMap.autoUpdate;
-    renderer.getClearColor(clear);
-    scene.background = null;
+    const { background, fog } = scene, auto = renderer.shadowMap.autoUpdate;
+    scene.background = backdrop;
     scene.fog = null;
     renderer.shadowMap.autoUpdate = false;
-    renderer.setClearColor(0x000000, 0);
-    renderer.setRenderTarget(target);
-    renderer.clear();
-    renderer.render(scene, camera);
-    renderer.readRenderTargetPixels(target, 0, 0, size, size, raw);
-    renderer.setRenderTarget(null);
-    renderer.setClearColor(clear, alpha);
+    // draw into the bottom-left corner of the game's own canvas, then copy it out before the frame ends
+    const vp = renderer.getViewport(new THREE.Vector4()), scissor = renderer.getScissorTest();
+    renderer.getClearColor(clear);
+    renderer.setViewport(0, 0, w, h);
+    renderer.setScissor(0, 0, w, h);
+    renderer.setScissorTest(true);
+    post.render();
+    const src = renderer.domElement;
+    canvas.getContext('2d')!.drawImage(src, 0, src.height - canvas.height, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+    renderer.setScissorTest(scissor);
+    renderer.setViewport(vp);
+    renderer.setClearColor(clear);
     renderer.shadowMap.autoUpdate = auto;
     scene.background = background;
     scene.fog = fog;
     for (const o of hidden) o.visible = true;
-
-    // same finish as the game's post pass: filmic curve, a little saturation, display encoding
-    const out = image.data, f = THREE.DataUtils.fromHalfFloat;
-    for (let y = 0; y < size; y++)
-      for (let x = 0; x < size; x++) {
-        const s = ((size - 1 - y) * size + x) * 4, d = (y * size + x) * 4; // GL rows run bottom-up
-        const a = Math.min(1, f(raw[s + 3]));
-        if (a <= 0.003) {
-          out[d + 3] = 0;
-          continue;
-        }
-        const r = filmic(f(raw[s]) / a), g = filmic(f(raw[s + 1]) / a), b = filmic(f(raw[s + 2]) / a);
-        const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        out[d] = encode(l + (r - l) * 1.12) * 255;
-        out[d + 1] = encode(l + (g - l) * 1.12) * 255;
-        out[d + 2] = encode(l + (b - l) * 1.12) * 255;
-        out[d + 3] = a * 255;
-      }
-    lctx.putImageData(image, 0, 0);
-    return true;
   }
 
-  /**
-   * Draw the study onto `canvas`. Leaves the rig in a diagram pose, so call it before the
-   * frame's player update, which re-poses the body. Returns false if the player can't be
-   * posed right now (ragdolled).
-   */
-  function draw(canvas: HTMLCanvasElement): boolean {
-    canvas.width = canvas.height = size;
-    const ctx = canvas.getContext('2d')!;
-    // second pose first, ghosted: arms raised, legs apart
-    if (!shoot(true)) return false;
-    ctx.clearRect(0, 0, size, size);
-    ctx.globalAlpha = 0.38;
-    ctx.drawImage(layer, 0, 0);
-    shoot(false);
-    ctx.globalAlpha = 1;
-    ctx.drawImage(layer, 0, 0);
-    return true;
-  }
-
-  return { draw };
+  return { el, draw };
 }

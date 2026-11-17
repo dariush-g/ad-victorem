@@ -7,8 +7,29 @@ import { segmentDistance } from './hits';
 export const R = 22; // sand radius
 const SEG = 128;
 
-/** Which gate: +1 north (+z), -1 south (-z). The two gateways are the same room turned half a circle. */
-export type Side = 1 | -1;
+/**
+ * Which gate: 0 north (+z), 1 south (-z), 2 east (+x), 3 west (-x). A fighter's seat in a match is
+ * their gate. All four gateways are the same room, built for the north and turned round the arena.
+ */
+export type Side = number;
+export const GATES = 4;
+const GATE_ANGLE = [0, Math.PI, Math.PI / 2, -Math.PI / 2];
+const ALL_GATES = [0, 1, 2, 3];
+/** Into a gate's own frame, where its room lies along +z (written into `out`). */
+function toGate(g: Side, x: number, z: number, out: { x: number; z: number }) {
+  const a = GATE_ANGLE[g], c = Math.cos(a), s = Math.sin(a);
+  out.x = x * c - z * s;
+  out.z = x * s + z * c;
+  return out;
+}
+/** Back from a gate's frame to the world. */
+function fromGate(g: Side, x: number, z: number, out: { x: number; z: number }) {
+  const a = GATE_ANGLE[g], c = Math.cos(a), s = Math.sin(a);
+  out.x = x * c + z * s;
+  out.z = -x * s + z * c;
+  return out;
+}
+const _g = { x: 0, z: 0 };
 
 /** Holding room behind each portcullis, under the stands. Measured with the gate on +z. */
 const ROOM = {
@@ -22,21 +43,33 @@ const ROOM = {
 };
 
 /** Where the local player is held: which gateway is theirs, and which side of its gate they are on while it is shut. */
-export const site = { side: 1 as Side, zone: 'room' as 'room' | 'arena' };
-const gateLift: Record<Side, number> = { [1]: 0, [-1]: 0 }; // 0 shut .. 1 fully raised
+export const site = { side: 0 as Side, zone: 'room' as 'room' | 'arena' };
+const gateLift = [0, 0, 0, 0]; // per gate: 0 shut .. 1 fully raised
 const PASSABLE = 0.75;
 
 /** Standing spot in a gateway room, and the heading that faces its gate. */
 export function spawnPoint(side: Side) {
-  return { pos: new THREE.Vector3(0, ROOM.floor, side * (R + 4)), facing: side === 1 ? Math.PI : 0 };
+  const p = fromGate(side, 0, R + 4, { x: 0, z: 0 });
+  return { pos: new THREE.Vector3(p.x, ROOM.floor, p.z), facing: GATE_ANGLE[side] + Math.PI };
+}
+
+/** Heading of the view from a gateway room out through its gate (camera yaw: 0 looks down -z). */
+export function gateYaw(side: Side) {
+  return GATE_ANGLE[side];
 }
 
 /**
  * Keep a circle of radius `r` inside the walls. With the local gate shut that is the room or the
  * sand, whichever `site.zone` says; with it raised, both plus the doorway between them.
  */
-export function confine(p: { x: number; z: number }, r: number) {
-  const s = site.side, z = p.z * s;
+export function confine(world: { x: number; z: number }, r: number) {
+  // worked out in the local gate's frame, where its room lies along +z
+  const s = site.side, p = toGate(s, world.x, world.z, { x: 0, z: 0 });
+  confineLocal(p, r, s);
+  fromGate(s, p.x, p.z, world);
+}
+function confineLocal(p: { x: number; z: number }, r: number, s: Side) {
+  const z = p.z;
   const { clamp } = THREE.MathUtils;
   const sand = () => {
     const d = Math.hypot(p.x, p.z), lim = R - r;
@@ -47,7 +80,7 @@ export function confine(p: { x: number; z: number }, r: number) {
   };
   const room = (zMin: number) => {
     p.x = clamp(p.x, r - ROOM.halfW, ROOM.halfW - r);
-    p.z = clamp(z, zMin, ROOM.z1 - r) * s;
+    p.z = clamp(z, zMin, ROOM.z1 - r);
   };
   const front = ROOM.z0 + r;
   if (gateLift[s] < PASSABLE) return site.zone === 'room' ? room(front) : sand();
@@ -64,15 +97,22 @@ export function confine(p: { x: number; z: number }, r: number) {
 
 /** Walkable height: flagstones through the gateways, sand everywhere else. */
 export function groundHeight(x: number, z: number): number {
-  if (Math.abs(z) > R - 0.45 && Math.abs(x) < ROOM.halfW + 0.5) return ROOM.floor;
+  if (Math.hypot(x, z) > R - 0.45)
+    for (const g of ALL_GATES) {
+      toGate(g, x, z, _g);
+      if (_g.z > R - 0.45 && Math.abs(_g.x) < ROOM.halfW + 0.5) return ROOM.floor;
+    }
   return sandHeight(x, z);
 }
 
 /** Height of whatever is overhead: the room ceiling, the gate lintel, or open sky. */
 export function ceilingAt(x: number, z: number): number {
-  const az = Math.abs(z);
-  if (az <= R - 0.3 || Math.abs(x) > ROOM.halfW + 0.5) return Infinity;
-  return az > ROOM.z0 ? ROOM.ceil : ROOM.doorH;
+  if (Math.hypot(x, z) <= R - 0.3) return Infinity;
+  for (const g of ALL_GATES) {
+    toGate(g, x, z, _g);
+    if (_g.z > R - 0.3 && Math.abs(_g.x) <= ROOM.halfW + 0.5) return _g.z > ROOM.z0 ? ROOM.ceil : ROOM.doorH;
+  }
+  return Infinity;
 }
 
 /** Pushable circle body (barrels). Placeholder physics: slide, friction, bounce. */
@@ -184,12 +224,13 @@ export function createArena(scene: THREE.Scene) {
 
   // --- podium wall + stepped seating (cavea) ---
   const PODIUM = 4.5, TIERS = 12, TREAD = 1.9, RISER = 1.45, LEDGE = 1.2;
-  // the wall is left open behind both gates, where the holding rooms look out through the bars
+  // the wall is left open behind every gate, where the holding rooms look out through the bars
   const DOOR_H = 3, doorA = Math.asin(1.65 / R);
   const podiumBand = (r: number, y0: number, y1: number, m: THREE.Material, s0: number, s1: number, gap = 0) => {
-    for (let k = 0; k < (gap ? 2 : 1); k++) {
+    // with a gap: four arcs, one between each pair of neighbouring gates (gates every quarter turn)
+    for (let k = 0; k < (gap ? GATES : 1); k++) {
       const geo = gap
-        ? new THREE.CylinderGeometry(r, r, y1 - y0, SEG / 2, 1, true, k * Math.PI + gap, Math.PI - gap * 2)
+        ? new THREE.CylinderGeometry(r, r, y1 - y0, SEG / GATES, 1, true, (k * Math.PI) / 2 + gap, Math.PI / 2 - gap * 2)
         : new THREE.CylinderGeometry(r, r, y1 - y0, SEG, 1, true);
       geo.translate(0, (y0 + y1) / 2, 0);
       add(tint(geo, (y) => (y > (y0 + y1) / 2 ? s1 : s0)), m);
@@ -204,12 +245,12 @@ export function createArena(scene: THREE.Scene) {
   {
     const { halfW, z1, floor, ceil } = ROOM, doorHalfW = 1.65;
     const zf = Math.sqrt(R * R - halfW * halfW); // where the side walls meet the curved podium wall
-    // each panel is built for the north gateway, then copied half a turn round for the south
+    // each panel is built for the north gateway, then copied round to the other three
     const panel = (w: number, h: number, m: THREE.Material, shade: (y: number) => number, place: (g: THREE.BufferGeometry) => void) => {
       const geo = new THREE.PlaneGeometry(w, h, Math.ceil(w), 1);
       place(geo);
-      add(tint(geo, shade), m);
-      add(geo.clone().rotateY(Math.PI), m);
+      tint(geo, shade);
+      for (const g of ALL_GATES) add(g ? geo.clone().rotateY(GATE_ANGLE[g]) : geo, m);
     };
     const wallShade = (y: number) => (y > 1 ? 0.78 : 0.55);
     const len = z1 - zf, zm = (z1 + zf) / 2;
@@ -268,14 +309,14 @@ export function createArena(scene: THREE.Scene) {
   shafts.receiveShadow = caps.receiveShadow = true;
   scene.add(shafts, caps);
 
-  // --- gates (portcullis) at north & south: the grille lifts into the lintel ---
+  // --- gates (portcullis) at the four quarters: the grille lifts into the lintel ---
   const gateIron = mat(PALETTE.iron, { surface: 'metal' });
   gateIron.clippingPlanes = [new THREE.Plane(new THREE.Vector3(0, -1, 0), 3.2)]; // raised bars vanish inside the lintel
   const GATE_RISE = 2.8, GATE_TIME = 1.8;
-  const grilles = {} as Record<Side, THREE.Group>;
-  const gateTarget: Record<Side, number> = { [1]: 0, [-1]: 0 };
+  const grilles: THREE.Group[] = [];
+  const gateTarget = [0, 0, 0, 0];
   const gate = (side: Side) => {
-    const angle = side === 1 ? 0 : Math.PI;
+    const angle = GATE_ANGLE[side];
     const g = new THREE.Group();
     g.position.set(Math.sin(angle) * R, 0, Math.cos(angle) * R);
     g.rotation.y = angle + Math.PI; // local +z faces arena centre
@@ -303,8 +344,7 @@ export function createArena(scene: THREE.Scene) {
     grilles[side] = grille;
     scene.add(g);
   };
-  gate(1);
-  gate(-1);
+  for (const g of ALL_GATES) gate(g);
   /** Raise or drop a portcullis; it takes a couple of seconds to travel. */
   const setGate = (side: Side, open: boolean) => void (gateTarget[side] = open ? 1 : 0);
   const gateOpen = (side: Side) => gateLift[side] >= PASSABLE;
@@ -314,9 +354,9 @@ export function createArena(scene: THREE.Scene) {
   {
     const { halfW, z1, floor } = ROOM;
     const flameMat = new THREE.MeshBasicMaterial({ color: 0xffb648, fog: false });
-    for (const side of [1, -1] as Side[]) {
+    for (const side of ALL_GATES) {
       const room = new THREE.Group();
-      room.rotation.y = side === 1 ? 0 : Math.PI;
+      room.rotation.y = GATE_ANGLE[side];
       const bench = new THREE.Group();
       const seat = solid(new RoundedBoxGeometry(0.45, 0.08, 2.2, 2, 0.02), wood);
       seat.position.y = 0.46;
@@ -347,10 +387,10 @@ export function createArena(scene: THREE.Scene) {
     scene.add(torchLight);
   }
 
-  // --- banners on the podium wall ---
+  // --- banners on the podium wall: two between each pair of gates ---
   const cloth = mat(PALETTE.banner, { surface: 'cloth' }), gold = mat(PALETTE.gold, { surface: 'metal' });
-  for (let i = 0; i < 10; i++) {
-    const a = ((i + 0.5) / 10) * Math.PI * 2;
+  for (let i = 0; i < 8; i++) {
+    const a = ((i % 2 ? 2 : 1) / 3 + Math.floor(i / 2)) * (Math.PI / 2);
     const b = solid(new RoundedBoxGeometry(1.3, 2.2, 0.06, 3, 0.025), cloth);
     b.position.set(Math.sin(a) * (R - 0.12), 2.2, Math.cos(a) * (R - 0.12));
     b.rotation.y = a + Math.PI;
@@ -434,8 +474,11 @@ export function createArena(scene: THREE.Scene) {
     time += dt;
     const flick = 0.5 + 0.5 * Math.sin(time * 11) * Math.sin(time * 7.3 + 1.1);
     torchLight.intensity = 12 + 4 * flick;
-    torchLight.position.z = site.side * TORCH_Z; // one light, kept in whichever room the player was given
-    for (const side of [1, -1] as Side[]) {
+    // one light, kept in whichever room the player was given
+    fromGate(site.side, 0, TORCH_Z, _g);
+    torchLight.position.x = _g.x;
+    torchLight.position.z = _g.z;
+    for (const side of ALL_GATES) {
       const d = gateTarget[side] - gateLift[side];
       gateLift[side] += Math.sign(d) * Math.min(Math.abs(d), dt / GATE_TIME);
       grilles[side].position.y = gateLift[side] * GATE_RISE;

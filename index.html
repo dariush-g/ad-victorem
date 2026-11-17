@@ -4,178 +4,175 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Gladiators</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:ital,wght@0,400;0,700;1,400&display=swap" />
     <style>
+      :root {
+        --font-display: 'Bebas Neue', sans-serif;
+        --font-body: 'Inter', system-ui, sans-serif;
+        font-synthesis-weight: none; /* Bebas Neue has one weight: no smeared fake bold */
+        --accent: #5b84b1; --accent-hi: #8fb0d4; /* steel blue */
+      }
       html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
       canvas { display: block; }
       #hud { position: fixed; inset: 0; pointer-events: none; color: #fff7e6; user-select: none;
-        font-family: 'Trajan Pro', 'Cinzel', Georgia, 'Times New Roman', serif; text-transform: uppercase;
+        font-family: var(--font-display); text-transform: uppercase;
         letter-spacing: 2px; text-shadow: 2px 2px 0 #1a1210, -1px -1px 0 #1a1210, 1px -1px 0 #1a1210, -1px 1px 0 #1a1210; }
       #rank { position: absolute; left: 28px; top: 20px; }
       #rank .sub { font-size: 13px; opacity: 0.9; }
-      .prompt b { color: #f0c050; }
+      .prompt b { color: #fff7e6; }
       #menu { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(20, 12, 10, 0.55);
-        color: #fff7e6; font-family: 'Trajan Pro', 'Cinzel', Georgia, 'Times New Roman', serif; user-select: none; }
+        color: #fff7e6; font-family: var(--font-display); user-select: none; }
       #menu[hidden] { display: none; }
-      #start { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px;
-        padding: 16px; box-sizing: border-box; overflow-y: auto; color: #fff7e6; user-select: none;
-        background: radial-gradient(ellipse at 50% 40%, rgba(30, 18, 12, 0.35), rgba(12, 7, 5, 0.85)); }
-      #start[hidden] { display: none; }
-      .start-title { text-align: center; }
-      .start-title h1 { margin: 0; font: bold clamp(40px, 9vw, 84px) 'Trajan Pro', 'Cinzel', Georgia, serif; letter-spacing: 0.12em; color: #f0c050;
+      /* main menu: the whole screen, until the player is queueing, matched or practising */
+      #hud { z-index: 25; }
+      body.in-main #rank, body.in-main #match, body.in-main #foes, body.in-main .foe-name, body.in-main .prompt { display: none; }
+      #main { position: fixed; inset: 0; z-index: 20; overflow-y: auto; color: #fff7e6; user-select: none;
+        font-family: var(--font-display);
+        background: linear-gradient(rgba(14, 9, 6, 0.55), rgba(14, 9, 6, 0.55)), url("/menu-bg.png") center / cover no-repeat #160d09;
+        image-rendering: pixelated; }
+      #main[hidden] { display: none; }
+      .main-wrap { min-height: 100%; max-width: 1240px; margin: 0 auto; padding: 40px 48px; box-sizing: border-box;
+        display: flex; flex-direction: column; gap: 36px; }
+      .main-top { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap;
+        padding-bottom: 22px; border-bottom: 1px solid rgba(91, 132, 177, 0.3); }
+      .main-top h1 { margin: 0; font: bold clamp(40px, 7vw, 76px)/1 var(--font-display); letter-spacing: 0.12em; color: #fff7e6;
         text-transform: uppercase; text-shadow: 0 3px 0 #5a3a22, 0 8px 30px rgba(0, 0, 0, 0.7); }
-      .start-sub { margin-top: 6px; font: italic 16px Georgia, serif; letter-spacing: 3px; color: rgba(255, 247, 230, 0.8); }
-      .start-panels { display: flex; flex-wrap: wrap; gap: 18px; justify-content: center; align-items: flex-start; width: 100%; }
-      .start-box { width: min(380px, 100%); padding: 18px 20px; box-sizing: border-box; background: rgba(38, 24, 18, 0.94);
-        border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
-      .start-box h2 { margin: 0 0 10px; font-size: 13px; letter-spacing: 3px; color: #f0c050; text-transform: uppercase; }
-      .start-box .menu-name { margin-bottom: 12px; }
-      .start-play { width: 100%; font: bold 20px Georgia, serif; letter-spacing: 6px; text-transform: uppercase; color: #1a1210; cursor: pointer;
-        padding: 12px; background: #f0c050; border: 1px solid #1a1210; border-radius: 4px; }
-      .start-play:hover { background: #ffe08a; }
-      #shop { position: fixed; inset: 0; z-index: 15; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
+      .main-sub { margin-top: 10px; font: italic 16px var(--font-body); letter-spacing: 3px; color: rgba(255, 247, 230, 0.75); }
+      .main-purse { display: flex; gap: 18px; font: bold 14px var(--font-body); letter-spacing: 2px; text-transform: uppercase; color: rgba(255, 247, 230, 0.85); }
+      .main-purse b { color: #fff7e6; }
+      .main-body { flex: 1; display: grid; grid-template-columns: minmax(300px, 380px) 1fr; gap: 40px; align-items: start; }
+      .main-nav { display: flex; flex-direction: column; gap: 10px; }
+      .main-nav .menu-name { margin-bottom: 6px; }
+      .main-nav > button, .main-nav .menu-join button { font: bold 16px var(--font-body); letter-spacing: 3px; text-transform: uppercase; color: #fff7e6;
+        cursor: pointer; padding: 14px 18px; text-align: left; background: rgba(91, 132, 177, 0.08); border: 1px solid #6e5334; border-radius: 4px; }
+      .main-nav > button:hover, .main-nav .menu-join button:hover { border-color: var(--accent); background: rgba(91, 132, 177, 0.2); }
+      .main-nav > button kbd { float: right; font: 12px var(--font-body); letter-spacing: 1px; color: rgba(255, 247, 230, 0.5); }
+      .main-nav > .main-play { padding: 20px 18px; font-size: 22px; letter-spacing: 6px; color: #1a1210; background: var(--accent); border-color: #1a1210; }
+      .main-nav > .main-play:hover { background: var(--accent-hi); border-color: #1a1210; }
+      .main-nav > .main-play kbd { color: rgba(26, 18, 16, 0.55); }
+      .main-nav .menu-join button { text-align: center; }
+      .main-sep { height: 1px; margin: 8px 0; background: rgba(91, 132, 177, 0.25); }
+      .main-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; align-items: start; }
+      .main-card { padding: 18px 20px; box-sizing: border-box; background: rgba(38, 24, 18, 0.85); border: 1px solid #6e5334; border-radius: 6px; }
+      .main-card h2 { margin: 0 0 12px; font-size: 13px; letter-spacing: 3px; color: #fff7e6; text-transform: uppercase; }
+      .main-card .menu-account { margin: 0; padding: 0; border: none; background: none; }
+      .main-card.wide { grid-column: 1 / -1; }
+      .main-card .menu-keys { grid-template-columns: repeat(auto-fill, minmax(96px, auto) minmax(140px, 1fr)); }
+      @media (max-width: 760px) {
+        .main-wrap { padding: 24px 16px; gap: 24px; }
+        .main-body { grid-template-columns: 1fr; gap: 24px; }
+        .main-card .menu-keys { grid-template-columns: auto 1fr; }
+      }
+      #shop { position: fixed; inset: 0; z-index: 22; display: flex; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box;
         background: rgba(20, 12, 10, 0.55); color: #fff7e6; user-select: none; }
       #shop[hidden] { display: none; }
       .shop-box { width: min(560px, 100%); max-height: calc(100vh - 32px); display: flex; flex-direction: column; padding: 18px 20px; box-sizing: border-box;
         background: rgba(38, 24, 18, 0.96); border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
       .shop-head { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-      .shop-head h2 { margin: 0; flex: 1; font-size: 20px; letter-spacing: 4px; color: #f0c050; text-transform: uppercase; }
-      .shop-gold { font: bold 15px Georgia, serif; color: #f0c050; }
-      .shop-close { width: 30px; height: 30px; font: bold 15px Georgia, serif; color: #fff7e6; cursor: pointer; background: transparent; border: 1px solid #6e5334; border-radius: 4px; }
-      .shop-close:hover { border-color: #f0c050; }
-      .shop-note { min-height: 1em; margin-bottom: 8px; font: 13px Georgia, serif; color: #f0a050; }
+      .shop-head h2 { margin: 0; flex: 1; font-size: 20px; letter-spacing: 4px; color: #fff7e6; text-transform: uppercase; }
+      .shop-gold { font: bold 15px var(--font-body); color: #fff7e6; }
+      .shop-close { width: 30px; height: 30px; font: bold 15px var(--font-body); color: #fff7e6; cursor: pointer; background: transparent; border: 1px solid #6e5334; border-radius: 4px; }
+      .shop-close:hover { border-color: var(--accent); }
+      .shop-note { min-height: 1em; margin-bottom: 8px; font: 13px var(--font-body); color: #f0a050; }
       .shop-note:empty { display: none; }
       .shop-list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
       .shop-item { display: grid; grid-template-columns: 40px 1fr auto; gap: 12px; align-items: center; padding: 8px 10px;
         background: rgba(0, 0, 0, 0.25); border: 1px solid #6e5334; border-radius: 4px; }
       .shop-item .icon { width: 40px; height: 40px; }
-      .shop-item .name { font: bold 14px Georgia, serif; color: #fff7e6; }
-      .shop-item .effect { font: 12px Georgia, serif; color: rgba(255, 247, 230, 0.7); }
-      .shop-item button { min-width: 96px; font: bold 13px Georgia, serif; letter-spacing: 1px; color: #1a1210; cursor: pointer; padding: 8px 10px;
-        background: #f0c050; border: 1px solid #1a1210; border-radius: 3px; }
-      .shop-item button:hover:not(:disabled) { background: #ffe08a; }
+      .shop-item .name { font: bold 14px var(--font-body); color: #fff7e6; }
+      .shop-item .effect { font: 12px var(--font-body); color: rgba(255, 247, 230, 0.7); }
+      .shop-item button { min-width: 96px; font: bold 13px var(--font-body); letter-spacing: 1px; color: #1a1210; cursor: pointer; padding: 8px 10px;
+        background: var(--accent); border: 1px solid #1a1210; border-radius: 3px; }
+      .shop-item button:hover:not(:disabled) { background: var(--accent-hi); }
       .shop-item button:disabled { cursor: default; color: rgba(255, 247, 230, 0.6); background: transparent; border-color: #6e5334; }
-      .shop-help { margin-top: 10px; font: 12px Georgia, serif; color: rgba(255, 247, 230, 0.6); text-align: center; }
+      .shop-help { margin-top: 10px; font: 12px var(--font-body); color: rgba(255, 247, 230, 0.6); text-align: center; }
       .menu-box { width: min(420px, calc(100vw - 32px)); padding: 26px 28px 22px; box-sizing: border-box; background: rgba(38, 24, 18, 0.94);
         border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
-      .menu-box h1 { margin: 0 0 18px; text-align: center; font-size: 28px; letter-spacing: 4px; color: #f0c050; text-transform: uppercase; }
+      .menu-box h1 { margin: 0 0 18px; text-align: center; font-size: 28px; letter-spacing: 4px; color: #fff7e6; text-transform: uppercase; }
       .menu-actions { display: flex; flex-direction: column; gap: 8px; }
-      .menu-actions button { font: bold 15px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer;
-        padding: 11px; background: rgba(240, 192, 80, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
-      .menu-actions button:hover { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
+      .menu-actions button { font: bold 15px var(--font-body); letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer;
+        padding: 11px; background: rgba(91, 132, 177, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
+      .menu-actions button:hover { border-color: var(--accent); background: rgba(91, 132, 177, 0.22); }
       .menu-actions button[hidden], .menu-join[hidden] { display: none; }
       .menu-join { display: flex; gap: 8px; }
-      .menu-join input { flex: 1; min-width: 0; font: bold 15px Georgia, serif; letter-spacing: 4px; text-transform: uppercase; text-align: center;
+      .menu-join input { flex: 1; min-width: 0; font: bold 15px var(--font-body); letter-spacing: 4px; text-transform: uppercase; text-align: center;
         color: #fff7e6; background: rgba(0, 0, 0, 0.35); border: 1px solid #6e5334; border-radius: 4px; padding: 10px; }
-      .menu-join input:focus { outline: none; border-color: #f0c050; }
+      .menu-join input:focus { outline: none; border-color: var(--accent); }
       .menu-join input::placeholder { letter-spacing: 1px; color: rgba(255, 247, 230, 0.45); text-transform: none; }
       .menu-join button { flex: 0 0 auto; padding: 11px 18px; }
-      .menu-name { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font: 12px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #f0c050; }
-      .menu-name input { font: bold 16px Georgia, serif; letter-spacing: 2px; text-align: center; color: #fff7e6; background: rgba(0, 0, 0, 0.35);
+      .menu-name { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; font: 12px var(--font-body); letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; }
+      .menu-name input { font: bold 16px var(--font-body); letter-spacing: 2px; text-align: center; color: #fff7e6; background: rgba(0, 0, 0, 0.35);
         border: 1px solid #6e5334; border-radius: 4px; padding: 10px; }
-      .menu-name input:focus { outline: none; border-color: #f0c050; }
+      .menu-name input:focus { outline: none; border-color: var(--accent); }
       .menu-name input.missing { border-color: #d8483c; }
       .menu-name input::placeholder { letter-spacing: 1px; color: rgba(255, 247, 230, 0.45); }
-      #foe-name { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%); white-space: nowrap; font-size: 15px; font-weight: bold;
-        color: #f0c050; text-transform: none; letter-spacing: 1px; will-change: transform; }
-      #foe-name[hidden] { display: none; }
+      .foe-name { position: absolute; left: 0; top: 0; transform: translate(-50%, -100%); white-space: nowrap; font-size: 15px; font-weight: bold;
+        color: #fff7e6; text-transform: none; letter-spacing: 1px; will-change: transform; }
+      .foe-name[hidden] { display: none; }
       .result { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(380px, calc(100vw - 32px)); box-sizing: border-box;
         padding: 22px 24px 18px; text-align: center; pointer-events: auto; background: rgba(38, 24, 18, 0.92); border: 2px solid #b98a45;
         border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); text-shadow: none; }
       .result[hidden] { display: none; }
-      .result-title { font-size: 30px; font-weight: bold; letter-spacing: 4px; color: #f0c050; }
-      .result-note { min-height: 18px; margin: 8px 0 16px; font: 13px Georgia, serif; letter-spacing: 0.5px; text-transform: none; }
+      .result-title { font-size: 30px; font-weight: bold; letter-spacing: 4px; color: #fff7e6; }
+      .result-note { min-height: 18px; margin: 8px 0 16px; font: 13px var(--font-body); letter-spacing: 0.5px; text-transform: none; }
       .result-actions { display: flex; flex-direction: column; gap: 8px; }
-      .result-actions button { font: bold 14px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer;
-        padding: 11px; background: rgba(240, 192, 80, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
-      .result-actions button:hover:not(:disabled) { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
+      .result-actions button { font: bold 14px var(--font-body); letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer;
+        padding: 11px; background: rgba(91, 132, 177, 0.1); border: 1px solid #6e5334; border-radius: 4px; }
+      .result-actions button:hover:not(:disabled) { border-color: var(--accent); background: rgba(91, 132, 177, 0.22); }
       .result-actions button:disabled { cursor: default; opacity: 0.4; }
       .menu-box { max-height: calc(100vh - 32px); overflow-y: auto; }
       .menu-name[hidden] { display: none; }
       .menu-account[hidden] { display: none; }
-      .menu-account { margin-bottom: 14px; padding: 12px; border: 1px solid rgba(240, 192, 80, 0.35); background: rgba(0, 0, 0, 0.2); font: 13px Georgia, serif; color: #fff7e6; }
+      .menu-account { margin-bottom: 14px; padding: 12px; border: 1px solid rgba(91, 132, 177, 0.35); background: rgba(0, 0, 0, 0.2); font: 13px var(--font-body); color: #fff7e6; }
       .menu-account[data-state="guest"] .acct-user, .menu-account[data-state="user"] .acct-guest { display: none; }
       .acct-note { margin-bottom: 8px; color: rgba(255, 247, 230, 0.75); }
       .acct-form { display: flex; gap: 8px; margin-bottom: 8px; }
-      .acct-form input { flex: 1; min-width: 0; font: 14px Georgia, serif; padding: 8px 10px; color: #fff7e6; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(240, 192, 80, 0.4); }
-      .acct-form input:focus { outline: none; border-color: #f0c050; }
+      .acct-form input { flex: 1; min-width: 0; font: 14px var(--font-body); padding: 8px 10px; color: #fff7e6; background: rgba(0, 0, 0, 0.35); border: 1px solid rgba(91, 132, 177, 0.4); }
+      .acct-form input:focus { outline: none; border-color: var(--accent); }
       .acct-form input::placeholder { color: rgba(255, 247, 230, 0.45); }
       .acct-buttons { display: flex; gap: 8px; }
-      .menu-account button { flex: 1; font: bold 12px Georgia, serif; letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer; padding: 8px 10px;
-        background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(240, 192, 80, 0.45); }
-      .menu-account button:hover:not(:disabled) { border-color: #f0c050; background: rgba(240, 192, 80, 0.22); }
+      .menu-account button { flex: 1; font: bold 12px var(--font-body); letter-spacing: 2px; text-transform: uppercase; color: #fff7e6; cursor: pointer; padding: 8px 10px;
+        background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(91, 132, 177, 0.45); }
+      .menu-account button:hover:not(:disabled) { border-color: var(--accent); background: rgba(91, 132, 177, 0.22); }
       .menu-account button:disabled { opacity: 0.5; cursor: default; }
       .acct-user { display: flex; flex-direction: column; gap: 6px; }
-      .acct-user b { color: #f0c050; }
+      .acct-user b { color: #fff7e6; }
       .acct-record { color: rgba(255, 247, 230, 0.75); }
       .acct-msg { margin-top: 6px; min-height: 1em; color: #f0a050; }
       .acct-msg:empty { display: none; }
-      .board { margin: 0; padding: 0; list-style: none; counter-reset: rank; font: 13px Georgia, serif; }
+      .board { margin: 0; padding: 0; list-style: none; counter-reset: rank; font: 13px var(--font-body); }
       .board li { display: flex; gap: 10px; padding: 3px 0; counter-increment: rank; }
       .board li::before { content: counter(rank) "."; width: 1.6em; text-align: right; color: rgba(255, 247, 230, 0.55); }
       .board li span { flex: 1; overflow: hidden; text-overflow: ellipsis; }
-      .board li b { color: #f0c050; font-variant-numeric: tabular-nums; }
+      .board li b { color: #fff7e6; font-variant-numeric: tabular-nums; }
       .board li.board-top { font-size: 15px; font-weight: bold; }
-      .board li.board-top::before { content: "★"; color: #f0c050; }
-      .board li.board-me span { color: #f0c050; }
+      .board li.board-top::before { content: "★"; color: #fff7e6; }
+      .board li.board-me span { color: #fff7e6; }
       .board li.board-empty { color: rgba(255, 247, 230, 0.55); }
       .board li.board-empty::before { content: none; }
-      .menu-box h2 { margin: 20px 0 8px; font-size: 13px; letter-spacing: 3px; color: #f0c050; text-transform: uppercase; }
-      .menu-keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font: 13px Georgia, serif; }
-      .menu-keys b { color: #f0c050; text-align: right; font-weight: bold; }
+      .menu-box h2 { margin: 20px 0 8px; font-size: 13px; letter-spacing: 3px; color: #fff7e6; text-transform: uppercase; }
+      .menu-keys { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; font: 13px var(--font-body); }
+      .menu-keys b { color: #fff7e6; text-align: right; font-weight: bold; }
       .prompt, .toast { position: absolute; left: 0; right: 0; text-align: center; opacity: 0; transition: opacity 0.2s; }
       .prompt { bottom: 76px; font-size: 17px; }
       .toast { top: 22%; font-size: 15px; }
       .prompt.show, .toast.show { opacity: 1; }
       #match { position: absolute; left: 0; right: 0; top: 64px; text-align: center; font-size: 17px; }
-      #match b { color: #f0c050; }
-      #foe { position: absolute; left: 50%; top: 22px; transform: translateX(-50%); text-align: center; font-size: 12px; }
-      #foe .bar { margin-top: 4px; width: 300px; }
-      .inv { position: absolute; right: 6%; top: 50%; transform: translateY(-50%); pointer-events: auto; padding: 18px 22px 14px;
-        background: rgba(38, 24, 18, 0.88); border: 2px solid #b98a45; border-radius: 6px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); text-shadow: none; }
-      .inv[hidden] { display: none; }
-      .inv-tabs { display: flex; gap: 6px; margin-bottom: 12px; border-bottom: 1px solid #6e5334; }
-      .inv-tab { padding: 6px 14px 5px; font-size: 16px; font-weight: bold; color: #b9a27a; cursor: pointer;
-        border: 1px solid transparent; border-bottom: none; border-radius: 5px 5px 0 0; }
-      .inv-tab:hover { color: #fff7e6; }
-      .inv-tab.on { color: #f0c050; border-color: #6e5334; background: rgba(240, 192, 80, 0.12); }
-      .sheet { width: 420px; }
-      .sheet-figure { position: relative; border: 1px solid #6e5334; border-radius: 4px; overflow: hidden;
-        background: radial-gradient(ellipse at 50% 45%, #6a4631 0%, #3a2419 62%, #22150f 100%); }
-      .sheet-figure svg, .sheet-figure canvas { position: absolute; left: 0; width: 100%; }
-      .sheet-figure svg { top: 0; height: 100%; }
-      .sheet-figure canvas { top: 12px; aspect-ratio: 1; }
-      .stat { position: absolute; width: 170px; }
-      .stat.tl, .stat.bl { left: 10px; }
-      .stat.tr, .stat.br { right: 10px; text-align: right; }
-      .stat.tl, .stat.tr { top: 9px; }
-      .stat.bl, .stat.br { bottom: 9px; }
-      .stat-name { white-space: nowrap; font: bold 14px Georgia, 'Times New Roman', serif; letter-spacing: 1.5px; color: #f0c050; text-shadow: 0 1px 2px #000; }
-      .stat-pips { display: flex; gap: 2px; margin: 4px 0; }
-      .stat.tr .stat-pips, .stat.br .stat-pips { justify-content: flex-end; }
-      .stat-pips i { width: 7px; height: 9px; background: rgba(0, 0, 0, 0.45); border: 1px solid #8a6a3a; box-sizing: border-box; }
-      .stat-pips i.on { background: #f0c050; border-color: #f0c050; }
-      .stat-note { font: 12px Georgia, 'Times New Roman', serif; letter-spacing: 0.4px; text-transform: none; color: #fff7e6; text-shadow: 0 1px 2px #000; }
-      .sheet-career { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; font: 13px Georgia, serif; }
-      .career-level { font-size: 16px; font-weight: bold; color: #f0c050; white-space: nowrap; }
-      .career-xp { position: relative; flex: 1; height: 14px; background: rgba(0, 0, 0, 0.45); border: 1px solid #6e5334; border-radius: 3px; overflow: hidden; }
-      .career-xp i { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(#7fb0e0, #3f6fa8); transition: width 0.3s; }
-      .career-xp span { position: absolute; inset: 0; text-align: center; font: bold 10px/14px Georgia, serif; letter-spacing: 1px; color: #fff7e6; }
-      .career-money { color: #f0c050; white-space: nowrap; }
-      .career-points { margin: -2px 0 10px; padding: 6px 10px; text-align: center; font: bold 12px Georgia, serif; letter-spacing: 1px;
-        color: #1a1210; background: #f0c050; border-radius: 3px; }
-      .career-points[hidden] { display: none; }
-      .stat-top { display: flex; align-items: center; gap: 6px; }
-      .stat.tr .stat-top, .stat.br .stat-top { flex-direction: row-reverse; }
-      .stat-plus { width: 20px; height: 20px; padding: 0; font: bold 15px/18px Georgia, serif; color: #1a1210; background: #f0c050;
-        border: 1px solid #1a1210; border-radius: 3px; cursor: pointer; pointer-events: auto; }
-      .stat-plus:hover { background: #ffe08a; }
-      .stat-plus[hidden] { display: none; }
-      .sheet-live { margin-top: 10px; font: 12px Georgia, serif; letter-spacing: 1px; text-align: center; }
+      #match b { color: #fff7e6; }
+      #match .match-sub { margin-top: 6px; font-size: 13px; opacity: 0.85; text-transform: none; }
+      /* every opponent's health, side by side at the top */
+      #foes { position: absolute; left: 50%; top: 22px; transform: translateX(-50%); display: flex; gap: 22px; }
+      #foes[hidden] { display: none; }
+      .foe { text-align: center; font-size: 12px; text-transform: none; transition: opacity 0.3s; }
+      .foe .bar { margin-top: 4px; width: 200px; }
+      .foe.out { opacity: 0.35; }
       .vitals { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; }
       .bar { position: relative; width: 230px; height: 15px; background: rgba(26, 18, 16, 0.7); border: 1px solid #1a1210;
-        border-radius: 3px; overflow: hidden; box-shadow: 0 0 0 1px rgba(240, 192, 80, 0.35); }
+        border-radius: 3px; overflow: hidden; box-shadow: 0 0 0 1px rgba(91, 132, 177, 0.35); }
       .bar i { position: absolute; left: 0; top: 0; bottom: 0; transition: width 0.12s linear; }
-      .bar span { position: absolute; inset: 0; text-align: center; font: bold 10px/15px Georgia, serif; letter-spacing: 1px; }
+      .bar span { position: absolute; inset: 0; text-align: center; font: bold 10px/15px var(--font-body); letter-spacing: 1px; }
       .bar.hp i { background: linear-gradient(#d8483c, #96231f); }
       .bar.hp.bleeding i { animation: bleed 0.9s ease-in-out infinite; }
       @keyframes bleed { 50% { filter: brightness(1.6); } }
@@ -186,71 +183,306 @@
       .bar.sp.empty { animation: sp-empty 0.45s ease-out; }
       @keyframes sp-empty { 0%, 40% { box-shadow: 0 0 0 2px #e0503c, 0 0 10px #e0503c; transform: translateX(-3px); }
         20%, 60% { transform: translateX(3px); } 100% { transform: none; } }
-      .inv-body { display: flex; gap: 22px; }
-      .inv-equip { display: grid; grid-template-columns: repeat(2, 64px); gap: 6px 8px; align-content: start; }
-      .inv-slot { display: flex; flex-direction: column; align-items: center; gap: 3px; font: 10px Georgia, serif; letter-spacing: 0.5px; }
-      .inv-bag { display: grid; grid-template-columns: repeat(4, 56px); gap: 8px; align-content: start; }
-      .inv-cell { position: relative; width: 56px; height: 56px; box-sizing: border-box; padding: 7px; background: rgba(0, 0, 0, 0.32);
-        border: 1px solid #6e5334; border-radius: 4px; }
-      .inv-cell.filled { cursor: pointer; background: rgba(240, 192, 80, 0.1); }
-      .inv-cell.filled:hover { border-color: #f0c050; background: rgba(240, 192, 80, 0.2); }
-      .inv-equip .inv-cell { border-color: #b98a45; }
-      .inv-count { position: absolute; right: 4px; bottom: 2px; font: bold 12px Georgia, serif; letter-spacing: 0; }
-      .inv-info { width: 414px; min-height: 48px; margin-top: 12px; font: 13px/1.35 Georgia, serif; text-transform: none; letter-spacing: 0.3px; }
-      .inv-info b { color: #f0c050; }
-      .inv-help { margin-top: 6px; font-size: 10px; opacity: 0.6; }
+      /* flat buttons: no box, no outline; an accent line slides in under the hovered one */
+      .main-nav > button, .main-nav .menu-join button, .menu-actions button, .result-actions button, .menu-account button,
+      .shop-item button, .shop-close, .stat-plus {
+        position: relative; color: #fff7e6; background: none; border: none; border-radius: 0; box-shadow: none; }
+      .main-nav > button, .main-nav .menu-join button, .menu-actions button, .result-actions button, .menu-account button, .shop-item button {
+        padding-left: 0; padding-right: 0; }
+      .menu-actions button, .result-actions button { text-align: left; }
+      .main-nav > button::after, .main-nav .menu-join button::after, .menu-actions button::after, .result-actions button::after,
+      .menu-account button::after, .shop-item button::after {
+        content: ''; position: absolute; left: 0; bottom: 4px; height: 2px; width: 100%; background: var(--accent);
+        transform: scaleX(0); transform-origin: left; transition: transform 0.18s ease-out; }
+      .main-nav > button:hover, .main-nav .menu-join button:hover, .menu-actions button:hover, .result-actions button:hover:not(:disabled),
+      .menu-account button:hover:not(:disabled), .shop-item button:hover:not(:disabled), .shop-close:hover, .stat-plus:hover {
+        color: #fff7e6; background: none; border: none; }
+      .main-nav > button:hover::after, .main-nav .menu-join button:hover::after, .menu-actions button:hover::after,
+      .result-actions button:hover:not(:disabled)::after, .menu-account button:hover:not(:disabled)::after,
+      .shop-item button:hover:not(:disabled)::after { transform: scaleX(1); }
+      .main-nav > .main-play, .main-nav > .main-play:hover { color: #fff7e6; background: none; border: none; }
+      .main-nav > .main-play::after { transform: scaleX(1); }
+      .main-nav > .main-play:hover { color: #fff7e6; }
+      .main-nav > button kbd, .main-nav > .main-play kbd { color: rgba(255, 247, 230, 0.45); }
+      .shop-item button { color: #fff7e6; text-align: right; }
+      .shop-item button:disabled { color: rgba(255, 247, 230, 0.45); background: none; border: none; }
+      .stat-plus { color: #fff7e6; font-size: 18px; }
+      .main-nav .menu-join button { padding: 11px 4px; }
+      .main-nav button:disabled { opacity: 0.35; cursor: default; color: #fff7e6; }
+      .main-nav button:disabled::after { transform: scaleX(0); }
+      .main-nav .menu-join input, .menu-join input { border: none; border-bottom: 1px solid rgba(255, 247, 230, 0.25); border-radius: 0; background: rgba(0, 0, 0, 0.25); }
+      .menu-join input:focus { border-bottom-color: var(--accent); }
+      /* inventory: paper doll and item detail over the bag. Floats at the right in the arena, sits in the page in the menu */
+      .inv { --cell: 58px; position: absolute; right: 4%; top: 50%; transform: translateY(-50%); pointer-events: auto; box-sizing: border-box;
+        width: min(820px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; padding: 16px 22px 18px;
+        color: #fff7e6; text-transform: none; letter-spacing: normal; text-shadow: none; font: 14px var(--font-body); user-select: none;
+        background: rgba(17, 13, 11, 0.94); border: 1px solid rgba(255, 247, 230, 0.1); border-radius: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55); }
+      .inv[hidden] { display: none; }
+      .inv.docked { position: static; transform: none; width: 100%; max-height: none; overflow: visible; background: rgba(17, 13, 11, 0.82); }
+      .main-page { display: none; }
+      .main-body.inv-docked .main-page { display: block; }
+      .main-body.inv-docked .main-cards { display: none; }
+      .main-nav > button.on { color: #fff7e6; }
+      .main-nav > button.on::after { transform: scaleX(1); }
+      .inv-head { display: flex; align-items: center; margin-bottom: 16px; border-bottom: 1px solid rgba(255, 247, 230, 0.1); }
+      .inv-tabs { flex: 1; display: flex; gap: 22px; }
+      .inv-tab { position: relative; padding: 6px 0 10px; font: 22px var(--font-display); letter-spacing: 2px; text-transform: uppercase;
+        color: rgba(255, 247, 230, 0.45); background: none; border: none; cursor: pointer; }
+      .inv-tab:hover { color: #fff7e6; }
+      .inv-tab.on { color: #fff7e6; }
+      .inv-tab.on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
+      .inv-close { width: 32px; height: 32px; font-size: 16px; color: rgba(255, 247, 230, 0.6); background: none; border: none; cursor: pointer; border-radius: 6px; }
+      .inv-close:hover { color: #fff7e6; background: rgba(255, 247, 230, 0.08); }
+      .inv-top { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+      .inv-doll { flex: 1 1 400px; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 14px 10px; border-radius: 8px;
+        background: radial-gradient(ellipse at 50% 55%, rgba(255, 247, 230, 0.07), rgba(255, 247, 230, 0.015) 70%); }
+      .inv-doll-col { display: flex; flex-direction: column; gap: 10px; }
+      .inv-slot { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+      .inv-slot-name { font: 600 10px var(--font-body); letter-spacing: 1.2px; text-transform: uppercase; color: rgba(255, 247, 230, 0.5); }
+      .inv-cell { position: relative; width: var(--cell); height: var(--cell); box-sizing: border-box; padding: 9px; cursor: pointer; border-radius: 8px;
+        background: rgba(255, 247, 230, 0.04); border: 1px solid rgba(255, 247, 230, 0.1); transition: border-color 0.12s, background 0.12s; }
+      .inv-cell:hover { border-color: rgba(255, 247, 230, 0.35); background: rgba(255, 247, 230, 0.08); }
+      .inv-cell.filled { background: rgba(255, 247, 230, 0.07); }
+      .inv-cell.picked { border-color: var(--accent); background: rgba(91, 132, 177, 0.16); box-shadow: 0 0 0 1px var(--accent), 0 0 18px rgba(91, 132, 177, 0.35); }
+      .inv-icon { width: 100%; height: 100%; }
+      .inv-count { position: absolute; right: 5px; bottom: 3px; font: 700 12px var(--font-body); }
+      .inv-detail { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+      .inv-view { position: relative; height: 200px; border-radius: 8px; overflow: hidden; background: #15110f; border: 1px solid rgba(255, 247, 230, 0.08); }
+      .inv-view canvas { display: block; width: 100%; height: 100%; cursor: grab; image-rendering: pixelated; }
+      .inv-view canvas:active { cursor: grabbing; }
+      .inv-view-hint { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font: 10px var(--font-body); color: rgba(255, 247, 230, 0.4); pointer-events: none; }
+      .inv-view-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font: 20px var(--font-display);
+        letter-spacing: 2px; text-transform: uppercase; color: rgba(255, 247, 230, 0.25); background: #15110f; }
+      .inv-view-empty[hidden] { display: none; }
+      .inv-d-name { margin-top: 4px; font: 30px/1 var(--font-display); letter-spacing: 1.5px; text-transform: uppercase; }
+      .inv-d-kind { font: 600 11px var(--font-body); letter-spacing: 1.2px; text-transform: uppercase; color: rgba(255, 247, 230, 0.5); }
+      .inv-d-desc { font: 13px/1.45 var(--font-body); color: rgba(255, 247, 230, 0.8); }
+      .inv-d-stats { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+      .inv-stat { display: grid; grid-template-columns: 84px 1fr auto; align-items: center; gap: 10px; font: 12px var(--font-body); }
+      .inv-stat-name { color: rgba(255, 247, 230, 0.6); }
+      .inv-stat-bar { height: 6px; border-radius: 3px; background: rgba(255, 247, 230, 0.1); overflow: hidden; }
+      .inv-stat-bar i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+      .inv-stat-val { grid-column: 3; font-weight: 700; font-variant-numeric: tabular-nums; }
+      .inv-d-action { align-self: flex-start; margin-top: 6px; padding: 9px 22px; font: 18px var(--font-display); letter-spacing: 2px; text-transform: uppercase;
+        color: #fff7e6; background: var(--accent); border: none; border-radius: 6px; cursor: pointer; }
+      .inv-d-action:hover:not(:disabled) { background: var(--accent-hi); color: #111; }
+      .inv-d-action:disabled { opacity: 0.4; cursor: default; }
+      .inv-d-action[hidden] { display: none; }
+      .inv-bag-wrap { margin-top: 18px; }
+      .inv-section { display: flex; justify-content: space-between; margin-bottom: 8px; font: 18px var(--font-display); letter-spacing: 2px; text-transform: uppercase; }
+      .inv-bag-count { font: 12px var(--font-body); letter-spacing: 0; color: rgba(255, 247, 230, 0.5); align-self: center; }
+      .inv-bag { display: grid; gap: 8px; }
+      .inv-help { margin-top: 12px; font: 11px var(--font-body); color: rgba(255, 247, 230, 0.4); }
+      /* character tab: same frame as the inventory page; attributes stand where the gear slots do */
+      .sheet { width: auto; }
+      .sheet-career { display: flex; align-items: baseline; justify-content: space-between; margin-top: 4px; }
+      .career-level { font: 30px/1 var(--font-display); letter-spacing: 1.5px; text-transform: uppercase; color: #fff7e6; }
+      .career-money { font: 700 13px var(--font-body); color: rgba(255, 247, 230, 0.8); }
+      .career-xp { position: relative; height: 6px; border-radius: 3px; background: rgba(255, 247, 230, 0.1); overflow: hidden; }
+      .career-xp i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; transition: width 0.3s; }
+      .career-xp-text { font: 11px var(--font-body); color: rgba(255, 247, 230, 0.5); }
+      .career-points { padding: 7px 10px; font: 700 12px var(--font-body); letter-spacing: 0.5px; color: #fff7e6;
+        background: rgba(91, 132, 177, 0.18); border: 1px solid rgba(91, 132, 177, 0.5); border-radius: 6px; }
+      .career-points[hidden] { display: none; }
+      .sheet-now { margin-top: 14px; margin-bottom: 0; }
+      .sheet-armour { margin-top: 4px; font: 12px var(--font-body); color: rgba(255, 247, 230, 0.6); }
+      .stat-chip { width: 100px; box-sizing: border-box; padding: 8px 9px; border-radius: 8px; cursor: help;
+        background: rgba(255, 247, 230, 0.04); border: 1px solid rgba(255, 247, 230, 0.1); }
+      .stat-chip-top { display: flex; align-items: center; justify-content: space-between; gap: 4px; min-height: 20px; }
+      .stat-chip-name { font: 16px/1 var(--font-display); letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; }
+      .stat-chip-note { font: 600 10px var(--font-body); color: rgba(255, 247, 230, 0.7); white-space: nowrap; }
+      .stat-pips { display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; margin: 7px 0 5px; }
+      .stat-pips i { height: 5px; border-radius: 1px; background: rgba(255, 247, 230, 0.12); }
+      .stat-pips i.on { background: var(--accent); }
+      .sheet .stat-plus { width: 20px; height: 20px; padding: 0; font: 700 14px/20px var(--font-body); color: #fff7e6; cursor: pointer;
+        background: var(--accent); border: none; border-radius: 5px; }
+      .sheet .stat-plus:hover { background: var(--accent-hi); color: #111; }
+      .sheet .stat-plus[hidden] { display: none; }
+      /* the shared, turnable figure */
+      .inv-figure { flex: 0 0 auto; width: 190px; height: 330px; position: relative; overflow: hidden; border-radius: 8px; }
+      .turntable, .turntable canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+      .turntable canvas { display: block; cursor: grab; touch-action: none; image-rendering: pixelated; }
+      .turntable canvas:active { cursor: grabbing; }
+      .turntable-hint { position: absolute; left: 0; right: 0; bottom: 6px; text-align: center; font: 10px var(--font-body);
+        color: rgba(255, 247, 230, 0.4); pointer-events: none; }
+      @media (max-width: 760px) {
+        .inv { --cell: 46px; padding: 12px; }
+        .inv-figure { width: 150px; height: 250px; }
+        .inv-bag { grid-template-columns: repeat(auto-fill, var(--cell)) !important; }
+      }
+      /* ===== one look for every panel, taken from the inventory: dark glass panels with a hairline edge,
+         soft "cells" for rows, inputs and secondary buttons, solid steel blue for the main action ===== */
+      :root {
+        --panel: rgba(17, 13, 11, 0.94); --panel-soft: rgba(17, 13, 11, 0.82); --line: rgba(255, 247, 230, 0.1);
+        --cell: rgba(255, 247, 230, 0.04); --cell-hi: rgba(255, 247, 230, 0.08); --line-hi: rgba(255, 247, 230, 0.35);
+        --muted: rgba(255, 247, 230, 0.55); --text: #fff7e6;
+      }
+      .main-card, .menu-box, .result, .shop-box {
+        background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55); text-shadow: none; }
+      .main-card { background: var(--panel-soft); box-shadow: none; padding: 18px 20px; }
+      .main-card h2, .menu-box h2 { margin: 0 0 12px; font: 18px var(--font-display); letter-spacing: 2px; text-transform: uppercase; color: var(--text); }
+      .menu-box h2 { margin-top: 22px; }
+      .menu-box h1, .shop-head h2 { margin: 0 0 16px; text-align: left; font: 30px/1 var(--font-display); letter-spacing: 1.5px; text-transform: uppercase; color: var(--text); }
+      .shop-head h2 { margin: 0; }
+      .result { padding: 22px 24px 20px; text-align: left; }
+      .result-title { font: 44px/1 var(--font-display); letter-spacing: 2px; text-transform: uppercase; color: var(--text); }
+      .result-note { margin: 8px 0 18px; font: 13px var(--font-body); color: var(--muted); letter-spacing: 0; }
+
+      /* buttons inside panels: secondary = a cell, primary = solid accent (no underline: that is the menu's own style) */
+      #menu .menu-actions button, #result .result-actions button, .menu-account button, .main-nav .menu-join button, .shop-item button {
+        position: relative; padding: 11px 14px; text-align: center; font: 17px var(--font-display); letter-spacing: 2px; text-transform: uppercase;
+        color: var(--text); background: var(--cell); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+      #menu .menu-actions button::after, #result .result-actions button::after, .menu-account button::after,
+      .main-nav .menu-join button::after, .shop-item button::after { display: none; }
+      #menu .menu-actions button:hover, #result .result-actions button:hover:not(:disabled), .menu-account button:hover:not(:disabled),
+      .main-nav .menu-join button:hover, .shop-item button:hover:not(:disabled) { color: var(--text); background: var(--cell-hi); border-color: var(--line-hi); }
+      #menu .menu-actions button[data-act="resume"], #result .result-actions button[data-act="again"], .menu-account button[data-act="login"],
+      .shop-item button:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+      #menu .menu-actions button[data-act="resume"]:hover, #result .result-actions button[data-act="again"]:hover, .menu-account button[data-act="login"]:hover:not(:disabled),
+      .shop-item button:hover:not(:disabled) { background: var(--accent-hi); border-color: var(--accent-hi); color: #111; }
+      #result .result-actions button:disabled, .menu-account button:disabled { opacity: 0.4; cursor: default; }
+      #result .result-actions button[hidden], #menu .menu-actions button[hidden] { display: none; }
+      .menu-actions, .result-actions { gap: 8px; }
+
+      /* inputs: cells too */
+      .menu-name input, .main-nav .menu-join input, .menu-join input, .acct-form input {
+        font: 600 15px var(--font-body); letter-spacing: 0.5px; text-transform: none; text-align: left; color: var(--text);
+        padding: 11px 12px; background: var(--cell); border: 1px solid var(--line); border-radius: 6px; }
+      .main-nav .menu-join input, .menu-join input { letter-spacing: 3px; text-transform: uppercase; }
+      .menu-name input:focus, .main-nav .menu-join input:focus, .menu-join input:focus, .acct-form input:focus { outline: none; border-color: var(--accent); background: var(--cell-hi); }
+      .menu-name input.missing { border-color: #d8483c; }
+      .menu-name input::placeholder, .menu-join input::placeholder, .acct-form input::placeholder { color: rgba(255, 247, 230, 0.35); letter-spacing: 0.5px; text-transform: none; }
+      .menu-name { font: 600 11px var(--font-body); letter-spacing: 1.2px; color: var(--muted); }
+
+      /* account */
+      .menu-account { font: 13px/1.45 var(--font-body); }
+      .acct-note, .acct-record { color: var(--muted); }
+      .acct-form { gap: 8px; margin: 10px 0 8px; }
+      .acct-user b { color: var(--text); }
+
+      /* leaderboard: rows like the inventory's stat rows */
+      .board { font: 13px var(--font-body); }
+      .board li { align-items: center; padding: 7px 10px; border-radius: 6px; }
+      .board li:nth-child(odd) { background: var(--cell); }
+      .board li::before { color: var(--muted); }
+      .board li.board-top { font-size: 14px; }
+      .board li.board-top::before { color: var(--accent-hi); }
+      .board li.board-me { box-shadow: inset 0 0 0 1px var(--accent); }
+      .board li.board-empty { background: none; padding-left: 0; }
+
+      /* controls: keys as key caps */
+      .menu-keys { gap: 7px 12px; align-items: center; font: 13px var(--font-body); color: rgba(255, 247, 230, 0.8); }
+      .menu-keys b { justify-self: end; padding: 2px 7px; font: 700 11px var(--font-body); letter-spacing: 0.3px; color: var(--text);
+        background: var(--cell-hi); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; white-space: nowrap; }
+
+      /* shop: rows are cells, the price is the buy button */
+      .shop-box { padding: 18px 20px; }
+      .shop-head { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+      .shop-gold { font: 700 14px var(--font-body); color: var(--text); }
+      .shop-close { width: 32px; height: 32px; font-size: 16px; color: var(--muted); background: none; border: none; border-radius: 6px; }
+      .shop-close:hover { color: var(--text); background: var(--cell-hi); border: none; }
+      .shop-list { gap: 8px; }
+      .shop-item { grid-template-columns: 48px 1fr auto; gap: 14px; padding: 10px 12px; background: var(--cell); border: 1px solid var(--line); border-radius: 8px; }
+      .shop-item .icon { width: 48px; height: 48px; box-sizing: border-box; padding: 7px; background: var(--cell-hi); border: 1px solid var(--line); border-radius: 8px; }
+      .shop-item .name { font: 20px/1 var(--font-display); letter-spacing: 1px; text-transform: uppercase; color: var(--text); }
+      .shop-item .effect { margin-top: 3px; font: 12px var(--font-body); color: var(--muted); }
+      .shop-item button { min-width: 104px; font-size: 16px; }
+      .shop-item button:disabled { color: var(--muted); background: none; border-color: var(--line); cursor: default; }
+      .shop-note { font: 12px var(--font-body); color: #f0a050; }
+      .shop-help { font: 11px var(--font-body); color: rgba(255, 247, 230, 0.4); }
+
+      /* in-game HUD: the same hairline-edged dark surfaces */
+      .bar { border: 1px solid var(--line); border-radius: 4px; background: rgba(17, 13, 11, 0.7); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); }
+      .bar i { border-radius: 3px; }
+      .toast { left: 50%; right: auto; transform: translateX(-50%); padding: 8px 16px; white-space: nowrap; font: 600 14px var(--font-body);
+        letter-spacing: 0.3px; text-transform: none; text-shadow: none; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; }
+      .foe { font: 16px var(--font-display); letter-spacing: 1.5px; }
     </style>
   </head>
   <body>
     <div id="hud">
       <div id="rank"><div class="sub">Slave · Wooden sword</div></div>
-      <div id="foe-name" hidden></div>
-      <div id="foe" hidden><span class="foe-title">Opponent</span><div class="bar hp"><i></i></div></div>
+      <div id="foes" hidden></div>
       <div id="match"></div>
       <div id="result" class="result" hidden>
         <div class="result-title"></div>
         <div class="result-note"></div>
         <div class="result-actions">
+          <button data-act="again">Find a new match</button>
           <button data-act="rematch">Rematch</button>
-          <button data-act="again">Find a new opponent</button>
-          <button data-act="room">Back to the room</button>
+          <button data-act="room">Main menu</button>
         </div>
       </div>
     </div>
-    <div id="start">
-      <div class="start-title">
-        <h1>Gladiators</h1>
-        <div class="start-sub">Fight for your freedom</div>
-      </div>
-      <div class="start-panels">
-        <div class="start-box">
-            <div id="account" class="menu-account" data-state="guest">
-              <form class="acct-guest" id="acct-form">
-                <div class="acct-note">Log in to save your progress and count your wins. Guests play without saving.</div>
-                <div class="acct-form">
-                  <input id="acct-user" maxlength="16" placeholder="Username" autocomplete="username" spellcheck="false" />
-                  <input id="acct-pass" type="password" maxlength="128" placeholder="Password" autocomplete="current-password" />
-                </div>
-                <div class="acct-buttons">
-                  <button type="submit" data-act="login">Log in</button>
-                  <button type="button" data-act="register">Create account</button>
-                </div>
-              </form>
-              <div class="acct-user">
-                <div>Signed in as <b id="acct-name"></b></div>
-                <div id="acct-record" class="acct-record"></div>
-                <button data-act="logout">Log out</button>
-              </div>
-              <div id="acct-msg" class="acct-msg" aria-live="polite"></div>
-            </div>
+    <div id="main">
+      <div class="main-wrap">
+        <header class="main-top">
+          <div>
+            <h1>Gladiators</h1>
+            <div class="main-sub">Fight for your freedom</div>
+          </div>
+          <div id="main-purse" class="main-purse"></div>
+        </header>
+        <div class="main-body">
+          <nav class="main-nav">
             <label class="menu-name">Your name
               <input id="player-name" maxlength="16" placeholder="Name your gladiator" autocomplete="off" spellcheck="false" />
             </label>
-          <button class="start-play" data-act="play">Play</button>
-        </div>
-        <div class="start-box start-board">
-          <h2>Leaderboard · most wins</h2>
-          <ol id="leaderboard" class="board"></ol>
+            <button class="main-play" data-act="search">Free for all <kbd>F</kbd></button>
+            <button data-act="host">Duel a friend · make a code</button>
+            <div class="menu-join">
+              <input id="join-code" maxlength="8" placeholder="Friend's code" autocomplete="off" spellcheck="false" />
+              <button data-act="join">Join</button>
+            </div>
+            <button data-act="practice">Practice <kbd>P</kbd></button>
+            <div class="main-sep"></div>
+            <button data-act="gear">Gear <kbd>Tab</kbd></button>
+            <button data-act="character">Character <kbd>C</kbd></button>
+            <button data-act="shop">Shop</button>
+          </nav>
+          <section id="main-page" class="main-page"></section>
+          <section class="main-cards">
+            <div class="main-card">
+              <h2>Account</h2>
+              <div id="account" class="menu-account" data-state="guest">
+                <form class="acct-guest" id="acct-form">
+                  <div class="acct-note">Log in to save your progress and count your wins. Guests play without saving.</div>
+                  <div class="acct-form">
+                    <input id="acct-user" maxlength="16" placeholder="Username" autocomplete="username" spellcheck="false" />
+                    <input id="acct-pass" type="password" maxlength="128" placeholder="Password" autocomplete="current-password" />
+                  </div>
+                  <div class="acct-buttons">
+                    <button type="submit" data-act="login">Log in</button>
+                    <button type="button" data-act="register">Create account</button>
+                  </div>
+                </form>
+                <div class="acct-user">
+                  <div>Signed in as <b id="acct-name"></b></div>
+                  <div id="acct-record" class="acct-record"></div>
+                  <button data-act="logout">Log out</button>
+                </div>
+                <div id="acct-msg" class="acct-msg" aria-live="polite"></div>
+              </div>
+            </div>
+            <div class="main-card">
+              <h2>Leaderboard · most wins</h2>
+              <ol id="leaderboard" class="board"></ol>
+            </div>
+            <div class="main-card wide">
+              <h2>Controls</h2>
+              <div class="menu-keys">
+                <b>WASD</b><span>Move</span>
+                <b>Shift</b><span>Jog</span>
+                <b>Left click</b><span>Attack · click again to combo</span>
+                <b>Hold click</b><span>Heavy attack</span>
+                <b>Space</b><span>Roll</span>
+                <b>Hold E</b><span>Block</span>
+                <b>Q</b><span>Parry</span>
+                <b>Mouse</b><span>Look</span>
+                <b>Esc</b><span>Pause</span>
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>
@@ -268,18 +500,11 @@
     </div>
     <div id="menu" hidden>
       <div class="menu-box">
-        <h1>Gladiators</h1>
+        <h1>Paused</h1>
         <div class="menu-actions">
           <button data-act="resume">Resume</button>
-          <button data-act="search">Find opponent</button>
-          <button data-act="host">Play a friend · make a code</button>
-          <div class="menu-join" data-show="join">
-            <input id="join-code" maxlength="8" placeholder="Friend's code" autocomplete="off" spellcheck="false" />
-            <button data-act="join">Join</button>
-          </div>
-          <button data-act="practice">Practice</button>
-          <button data-act="shop">Shop</button>
-          <button data-act="title">Title screen</button>
+          <button data-act="vote" hidden>Vote to start now</button>
+          <button data-act="leave">Main menu</button>
         </div>
         <h2>Controls</h2>
         <div class="menu-keys">
@@ -293,9 +518,8 @@
           <b>Mouse</b><span>Look</span>
           <b>Tab</b><span>Inventory</span>
           <b>C</b><span>Character</span>
-          <b>F</b><span>Find opponent</span>
-          <b>P</b><span>Practice</span>
-          <b>Esc</b><span>Menu</span>
+          <b>V</b><span>Vote to start (free-for-all lobby)</span>
+          <b>Esc</b><span>Pause</span>
         </div>
       </div>
     </div>

@@ -1,8 +1,14 @@
 /**
- * Gladiators duel server: matchmaking plus a message relay between the two fighters of each pair.
+ * Gladiators match server: matchmaking plus a message relay between the fighters of each match.
+ *
+ * Two kinds of match:
+ *  - free-for-all (the open queue): up to four fighters. A lobby starts by itself once four are in,
+ *    or earlier once at least two are in and every one of them has voted to start;
+ *  - duel (friend codes): one host waits on a code, one friend joins it, and the two may rematch.
  *
  * The server does not simulate the fight. Each client stays the authority over its own fighter
- * (see multiplayer.md); the server only pairs players and forwards what one says to the other.
+ * (see multiplayer.md); the server only groups players and forwards what each says to the others.
+ * Every fighter in a match has a seat (0..3), which is also the gate they enter from.
  *
  * Each client holds:
  *  - one WebSocket (TCP), for matchmaking, WebRTC signalling and every ordered game event;
@@ -12,16 +18,21 @@
  * over the WebSocket instead.
  *
  * WebSocket frames are JSON objects with an `op`:
- *   client → server  find {mode, code?, token?} · msg {m} · s {n, m} · rtc {answer | candidate} · ping
+ *   client → server  find {mode, code?, token?, name?} · vote {on} · msg {m, to?} · s {n, m} · rtc {answer | candidate} · ping
  *                    register / login {id, name, password} · resume {id, token} · logout {token}
  *                    save {id, token, progress} · spend {id, token, stat} · buy {id, token, item} · board {id}
- *   server → client  paired {host, foe} · fail {why} · msg {m} · s {n, m} · rtc {offer | candidate} · gone · pong
+ *   server → client  lobby {seat, players} · start {seat, mode, players} · fail {why} · msg {m, from} · s {n, m, from}
+ *                    left {seat} · rtc {offer | candidate} · pong
  *                    reply {id, ok, ...} (answers a request with an id) · profile {profile} (after a result is recorded)
  * Data channel frames are `s` frames only.
  *
- * Accounts (accounts.ts) are optional. The server settles each bout itself: whoever sends `dead`
- * lost it, their partner won. A logged-in winner gets the win's experience and money (career.ts);
- * the win and loss count toward the leaderboard only when both fighters are different accounts.
+ * `players` is [{seat, name, vote?}]. A `msg` with `to` goes only to that seat; otherwise to every other
+ * fighter in the match.
+ *
+ * Accounts (accounts.ts) are optional. The server settles each bout itself: whoever sends `dead` (or
+ * leaves mid-bout) is out, and the last fighter standing wins. A logged-in winner gets the win's
+ * experience and money (career.ts) if at least one fighter fell to them; each account that fell (not
+ * fled) and is not the winner's records a loss.
  */
 import { createServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -38,6 +49,10 @@ const rtcLib = UDP_PORT > 0 ? await import('node-datachannel') : null;
 /** Browsers this server talks to: the game's own pages, plus local dev. Empty: allow any origin. */
 const ORIGINS = (process.env.ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean);
 
+/** Fighters in a free-for-all, at most (one per gate). */
+const FFA_SIZE = 4;
+/** Longest name shown for a guest (accounts use their username). */
+const NAME_LENGTH = 16;
 /** Largest frame accepted from a client, and how many frames a second it may send before being cut off. */
 const MAX_FRAME = 2000, MAX_RATE = 120;
 /** A client that has said nothing (not even a ping) for this long is dropped. */
@@ -46,10 +61,24 @@ const CODE = /^[A-HJ-NP-Z2-9]{5}$/;
 /** Logins and sign-ups per address per minute (each costs a deliberately slow password hash). Generous, since a classroom shares one address; each account also locks after repeated wrong passwords. */
 const AUTH_PER_MIN = 30;
 
+interface Match {
+  mode: 'ffa' | 'duel';
+  /** Fighters by seat; a seat empties when its fighter leaves. */
+  seats: (Client | null)[];
+  /** The fight is on (a free-for-all lobby is not started until it fills or everyone votes). */
+  started: boolean;
+  /** The bout in progress: who is still standing, and who fell in it (fleeing is not falling). */
+  alive: Set<Client>;
+  fallen: Client[];
+  decided: boolean;
+}
+
 interface Client {
   ws: WebSocket;
-  partner: Client | null;
-  host: boolean;
+  match: Match | null;
+  seat: number;
+  /** Shown to the others: the account name, or the name a guest typed. */
+  name: string;
   /** Friend code this client is waiting on as host, if any. */
   code: string | null;
   pc: PeerConnection | null;
@@ -60,15 +89,15 @@ interface Client {
   closed: boolean;
   /** The account this connection is logged in as, if any. */
   account: string | null;
-  /** The bout in progress, shared with the partner: decided once someone falls. */
-  bout: { decided: boolean } | null;
-  /** Has asked for a rematch since the last bout was decided. */
+  /** In a lobby: has voted to start without waiting for it to fill. */
+  vote: boolean;
+  /** In a duel: has asked for a rematch since the last bout was decided. */
   again: boolean;
   ip: string;
 }
 
-/** At most one player waits in the open queue at a time; friend hosts wait by code. */
-let queued: Client | null = null;
+/** The free-for-all lobby filling up right now, if any; friend-code hosts wait by code. */
+let lobby: Match | null = null;
 const rooms = new Map<string, Client>();
 
 function send(c: Client, frame: object) {
@@ -86,42 +115,80 @@ function sendState(c: Client, raw: string) {
   if (c.ws.readyState === c.ws.OPEN) c.ws.send(raw);
 }
 
-function pair(host: Client, guest: Client) {
-  host.partner = guest;
-  guest.partner = host;
-  host.host = true;
-  guest.host = false;
-  host.bout = guest.bout = { decided: false };
-  host.again = guest.again = false;
-  // the opponent's real account name, so nobody can fight under someone else's
-  const nameOf = (c: Client) => (c.account ? accounts.getProfile(c.account)?.name ?? null : null);
-  send(host, { op: 'paired', host: true, foe: nameOf(guest) });
-  send(guest, { op: 'paired', host: false, foe: nameOf(host) });
+const members = (m: Match) => m.seats.filter((c): c is Client => !!c && !c.closed);
+const roster = (m: Match, votes = false) =>
+  members(m).map((c) => ({ seat: c.seat, name: c.name, ...(votes ? { vote: c.vote } : {}) }));
+
+function newMatch(mode: Match['mode']): Match {
+  return { mode, seats: [], started: false, alive: new Set(), fallen: [], decided: false };
 }
 
-/** `loser` says they fell: the bout is over. */
-function settle(loser: Client) {
-  const winner = loser.partner;
-  if (!winner || !loser.bout || loser.bout.decided) return;
-  loser.bout.decided = true;
-  if (!winner.account || winner.account === loser.account) return; // a guest's win is theirs to count, locally
+/** Sit a fighter in the first free seat. */
+function seat(m: Match, c: Client) {
+  let i = m.seats.findIndex((x) => !x || x.closed);
+  if (i < 0) i = m.seats.length;
+  m.seats[i] = c;
+  c.match = m;
+  c.seat = i;
+  c.vote = c.again = false;
+}
+
+/** Tell everyone in a lobby who is there and who has voted to start. */
+function lobbyNews(m: Match) {
+  const players = roster(m, true);
+  for (const c of members(m)) send(c, { op: 'lobby', seat: c.seat, players });
+}
+
+/** Free-for-all lobby: full, or two or more and every one wants to go. */
+function lobbyCheck(m: Match) {
+  const in_ = members(m);
+  if (in_.length >= FFA_SIZE || (in_.length >= 2 && in_.every((c) => c.vote))) begin(m);
+  else lobbyNews(m);
+}
+
+/** A fresh bout for everyone seated. */
+function bout(m: Match) {
+  m.alive = new Set(members(m));
+  m.fallen = [];
+  m.decided = false;
+  for (const c of m.alive) c.again = c.vote = false;
+}
+
+function begin(m: Match) {
+  if (lobby === m) lobby = null;
+  m.started = true;
+  bout(m);
+  const players = roster(m);
+  for (const c of members(m)) send(c, { op: 'start', seat: c.seat, mode: m.mode, players });
+}
+
+/**
+ * `c` is out of the bout: fell, or (`fled`) left mid-bout. Once one fighter stands alone, the bout is
+ * theirs. A win only pays if someone actually fell to it, so nobody farms wins off friends who leave.
+ */
+function fall(c: Client, fled = false) {
+  const m = c.match;
+  if (!m || !m.started || m.decided || !m.alive.delete(c)) return;
+  if (!fled) m.fallen.push(c);
+  if (m.alive.size > 1) return;
+  m.decided = true;
+  const [winner] = m.alive;
+  if (!winner?.account || m.fallen.length === 0) return; // a guest's win is theirs to count, locally
   accounts.awardWin(winner.account);
-  if (loser.account) accounts.recordResult(winner.account, loser.account);
-  for (const c of [winner, loser]) {
-    const profile = c.account && accounts.getProfile(c.account);
-    if (profile) send(c, { op: 'profile', profile: { ...profile, progress: undefined } });
+  for (const l of m.fallen) if (l.account && l.account !== winner.account) accounts.recordResult(winner.account, l.account);
+  for (const x of [winner, ...m.fallen]) {
+    const profile = x.account && accounts.getProfile(x.account);
+    if (profile) send(x, { op: 'profile', profile: { ...profile, progress: undefined } });
   }
 }
 
-/** Both have asked to fight again after a decided bout: a fresh bout on the same pairing. */
+/** Duels only: both have asked to fight again after a decided bout. */
 function rematch(c: Client) {
-  const p = c.partner;
-  if (!p || !c.bout?.decided) return;
+  const m = c.match;
+  if (!m || m.mode !== 'duel' || !m.decided) return;
   c.again = true;
-  if (p.again) {
-    c.bout = p.bout = { decided: false };
-    c.again = p.again = false;
-  }
+  const in_ = members(m);
+  if (in_.length === 2 && in_.every((x) => x.again)) bout(m);
 }
 
 const authUse = new Map<string, { n: number; reset: number }>();
@@ -176,21 +243,31 @@ async function accountOp(c: Client, f: { op?: unknown; [k: string]: unknown }) {
 }
 
 function unlist(c: Client) {
-  if (queued === c) queued = null;
   if (c.code && rooms.get(c.code) === c) rooms.delete(c.code);
   c.code = null;
+}
+
+/** Take a fighter out of their match: out of the bout if one is on, and the others are told. */
+function leave(c: Client) {
+  const m = c.match;
+  if (!m) return;
+  fall(c, true);
+  if (m.seats[c.seat] === c) m.seats[c.seat] = null;
+  c.match = null;
+  if (!m.started) {
+    if (members(m).length === 0) {
+      if (lobby === m) lobby = null;
+    } else lobbyCheck(m); // the ones left may all have voted already
+    return;
+  }
+  for (const o of members(m)) send(o, { op: 'left', seat: c.seat });
 }
 
 function drop(c: Client) {
   if (c.closed) return;
   c.closed = true;
   unlist(c);
-  const p = c.partner;
-  c.partner = null;
-  if (p && p.partner === c) {
-    p.partner = null;
-    send(p, { op: 'gone' });
-  }
+  leave(c);
   try {
     c.dc?.close();
     c.pc?.close();
@@ -201,14 +278,18 @@ function drop(c: Client) {
   } catch {}
 }
 
+/** A guest's typed name, tidied: no control characters, collapsed spaces, capped length. */
+function guestName(text: unknown) {
+  if (typeof text !== 'string') return '';
+  return text.replace(/[\p{C}]/gu, '').replace(/\s+/g, ' ').trim().slice(0, NAME_LENGTH).trim();
+}
+
 function find(c: Client, mode: unknown, code: unknown) {
-  if (c.partner || c.code || queued === c) return; // one search per connection
+  if (c.match || c.code) return; // one search per connection
   if (mode === 'queue') {
-    if (queued && !queued.closed) {
-      const host = queued;
-      queued = null;
-      pair(host, c);
-    } else queued = c;
+    if (!lobby || lobby.started || members(lobby).length >= FFA_SIZE) lobby = newMatch('ffa');
+    seat(lobby, c);
+    lobbyCheck(lobby);
   } else if (mode === 'host' && typeof code === 'string' && CODE.test(code)) {
     if (rooms.has(code)) return send(c, { op: 'fail', why: 'taken' });
     rooms.set(code, c);
@@ -217,7 +298,10 @@ function find(c: Client, mode: unknown, code: unknown) {
     const host = rooms.get(code);
     if (!host || host.closed) return send(c, { op: 'fail', why: 'missing' });
     unlist(host);
-    pair(host, c);
+    const m = newMatch('duel');
+    seat(m, host);
+    seat(m, c);
+    begin(m);
   }
 }
 
@@ -264,9 +348,19 @@ function receive(c: Client, raw: string, viaUdp: boolean) {
   switch (f.op) {
     case 'ping':
       return send(c, { op: 'pong' });
-    case 'find':
+    case 'find': {
       if (f.token !== undefined) c.account = accounts.session(f.token);
+      // the name the others see: an account's real name, so nobody can fight under someone else's
+      const profile = c.account && accounts.getProfile(c.account);
+      c.name = profile ? profile.name : guestName(f.name) || 'Gladiator';
       return find(c, f.mode, f.code);
+    }
+    case 'vote':
+      if (c.match && !c.match.started) {
+        c.vote = f.on === true;
+        lobbyCheck(c.match);
+      }
+      return;
     case 'register':
     case 'login':
     case 'resume':
@@ -279,18 +373,28 @@ function receive(c: Client, raw: string, viaUdp: boolean) {
       return;
     case 'rtc':
       return rtc(c, f as Parameters<typeof rtc>[1]);
-    case 's':
-      // forwarded untouched: the receiving client checks every field
-      if (c.partner && typeof f.n === 'number' && f.m && typeof f.m === 'object') sendState(c.partner, raw);
+    case 's': {
+      // forwarded with the sender's seat; the receiving client checks every field
+      const m = c.match;
+      if (!m?.started || typeof f.n !== 'number' || !f.m || typeof f.m !== 'object') return;
+      const out = JSON.stringify({ op: 's', n: f.n, m: f.m, from: c.seat });
+      for (const o of members(m)) if (o !== c) sendState(o, out);
       return;
-    case 'msg':
-      if (c.partner && f.m && typeof f.m === 'object') {
-        const t = (f.m as { t?: unknown }).t;
-        if (t === 'dead') settle(c);
-        else if (t === 'rematch') rematch(c);
-        send(c.partner, { op: 'msg', m: f.m });
-      }
+    }
+    case 'msg': {
+      const m = c.match;
+      if (!m?.started || !f.m || typeof f.m !== 'object') return;
+      const t = (f.m as { t?: unknown }).t;
+      if (t === 'dead') fall(c);
+      else if (t === 'rematch') rematch(c);
+      else if (t === 'leave') return leave(c);
+      const frame = { op: 'msg', m: f.m, from: c.seat };
+      if (typeof f.to === 'number') {
+        const o = m.seats[f.to];
+        if (o && o !== c && !o.closed) send(o, frame);
+      } else for (const o of members(m)) if (o !== c) send(o, frame);
       return;
+    }
   }
 }
 
@@ -310,8 +414,8 @@ wss.on('connection', (ws, req) => {
   const forwarded = String(req.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
   const ip = (local && forwarded) || req.socket.remoteAddress || '?';
   const c: Client = {
-    ws, partner: null, host: false, code: null, pc: null, dc: null, heard: Date.now(), budget: MAX_RATE, closed: false,
-    account: null, bout: null, again: false, ip,
+    ws, match: null, seat: 0, name: '', code: null, pc: null, dc: null, heard: Date.now(), budget: MAX_RATE, closed: false,
+    account: null, vote: false, again: false, ip,
   };
   clients.add(c);
   ws.on('message', (data, binary) => {
@@ -344,4 +448,4 @@ for (const sig of ['SIGINT', 'SIGTERM'] as const)
     process.exit(0);
   });
 
-http.listen(PORT, () => console.log(`duel server on :${PORT} (ws), ${rtcLib ? `udp :${UDP_PORT}` : 'no udp: state over the WebSocket'}`));
+http.listen(PORT, () => console.log(`match server on :${PORT} (ws), ${rtcLib ? `udp :${UDP_PORT}` : 'no udp: state over the WebSocket'}`));

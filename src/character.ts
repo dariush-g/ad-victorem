@@ -1,6 +1,5 @@
 import { STAT_MAX, type StatName, type Vitals } from './stats';
 import { xpToNext, type Career } from './career';
-import { FRAME } from './portrait';
 
 
 /** Health and stamina bars for the HUD. Returns a function that refreshes them. */
@@ -33,115 +32,106 @@ export function createVitalBars(vitals: Vitals, parent: HTMLElement) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Character sheet: a proportion study of the player. The figure is the game's own model
-// (rendered by portrait.ts) in two superimposed poses, inscribed in a circle and a square,
-// with each attribute called out from the part of the body it belongs to.
+// Character sheet: the same frame as the inventory page, with the fighter's live figure in the
+// middle (main.ts puts it in `figure`). Around it, where the inventory has gear slots, sit the
+// four attributes; on the right, where it shows an item, the career and the fighter's condition.
 // ---------------------------------------------------------------------------------------
 
 const ROMAN = ['', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
-const W = 420, HGT = 444; // diagram size, px
-const K = W / (FRAME.circle * 2 + FRAME.margin * 2); // px per body height
-const FEET_Y = (HGT + W) / 2 - FRAME.margin * K, CX = W / 2;
-/** Diagram position of a point on the body: x in heights to the figure's left, y in heights above the ground. */
-const at = (x: number, y: number): [number, number] => [CX + x * K, FEET_Y - y * K];
 
-interface Callout {
+interface StatInfo {
   stat: StatName;
   label: string;
-  corner: 'tl' | 'tr' | 'bl' | 'br';
-  point: [number, number];
+  what: string;
   note: (v: Vitals) => string;
 }
-const CALLOUTS: Callout[] = [
-  { stat: 'strength', label: 'Strength', corner: 'tl', point: at(-0.2, 0.8), note: (v) => `Hit force ×${v.power.toFixed(2)}` },
-  { stat: 'health', label: 'Health', corner: 'tr', point: at(0.035, 0.735), note: (v) => `Max health ${v.maxHealth}` },
-  { stat: 'stamina', label: 'Stamina', corner: 'bl', point: at(-0.05, 0.66), note: (v) => `Max stamina ${v.maxStamina}` },
-  { stat: 'agility', label: 'Agility', corner: 'br', point: at(0.075, 0.36), note: (v) => `Move speed ×${v.speed.toFixed(2)}` },
+const LEFT: StatInfo[] = [
+  { stat: 'strength', label: 'Strength', what: 'How hard your blows land', note: (v) => `Force ×${v.power.toFixed(2)}` },
+  { stat: 'health', label: 'Health', what: 'How much punishment you take', note: (v) => `${v.maxHealth} health` },
+];
+const RIGHT: StatInfo[] = [
+  { stat: 'stamina', label: 'Stamina', what: 'Breath for swings, rolls and blocks', note: (v) => `${v.maxStamina} stamina` },
+  { stat: 'agility', label: 'Agility', what: 'How fast you move', note: (v) => `Speed ×${v.speed.toFixed(2)}` },
 ];
 
 /**
- * The "body" tab. `canvas` is where portrait.ts draws the figure. `career` gives the level, money
+ * The "Character" tab. `figure` is the box for the fighter's figure. `career` gives the level, money
  * and skill points; `spend` is called when the player puts a point into a stat.
  */
 export function createCharacterSheet(vitals: Vitals, armour: () => string, career: () => Career, spend: (stat: StatName) => void) {
+  const make = <K extends keyof HTMLElementTagNameMap>(tag: K, cls: string, parent: HTMLElement, text = '') => {
+    const e = document.createElement(tag);
+    e.className = cls;
+    e.textContent = text;
+    parent.appendChild(e);
+    return e;
+  };
   const el = document.createElement('div');
   el.className = 'sheet';
-  // level, experience toward the next, money, and points waiting to be spent
-  const head = el.appendChild(document.createElement('div'));
-  head.className = 'sheet-career';
-  const levelEl = head.appendChild(document.createElement('div'));
-  levelEl.className = 'career-level';
-  const xpBar = head.appendChild(document.createElement('div'));
-  xpBar.className = 'career-xp';
-  const xpFill = xpBar.appendChild(document.createElement('i'));
-  const xpText = xpBar.appendChild(document.createElement('span'));
-  const moneyEl = head.appendChild(document.createElement('div'));
-  moneyEl.className = 'career-money';
-  const pointsEl = el.appendChild(document.createElement('div'));
-  pointsEl.className = 'career-points';
-  const figure = el.appendChild(document.createElement('div'));
-  figure.className = 'sheet-figure';
-  figure.style.height = HGT + 'px';
+  const top = make('div', 'inv-top', el);
 
-  // circle and square behind the figure; leader lines over it
-  const r = FRAME.circle * K, side = K, top = FEET_Y - side;
-  const svg = (inner: string) => `<svg viewBox="0 0 ${W} ${HGT}" fill="none" stroke="#f0c050" stroke-linecap="round">${inner}</svg>`;
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => `M${CX - side / 2 + t * side} ${FEET_Y + 5}v${t % 0.5 ? 4 : 7}`).join('');
-  const back = figure.appendChild(document.createElement('div'));
-  back.innerHTML = svg(`
-    <circle cx="${CX}" cy="${FEET_Y - r}" r="${r}" stroke-width="1.5" opacity="0.8"/>
-    <rect x="${CX - side / 2}" y="${top}" width="${side}" height="${side}" stroke-width="1.5" opacity="0.8"/>
-    <path d="M${CX} ${top}V${FEET_Y} M${CX - side / 2} ${FEET_Y - r}H${CX + side / 2}" stroke-width="1" opacity="0.22" stroke-dasharray="3 5"/>
-    <path d="${ticks}" stroke-width="1" opacity="0.7"/>`);
-  const canvas = figure.appendChild(document.createElement('canvas'));
-  const corner = { tl: [70, 66], tr: [W - 70, 66], bl: [70, HGT - 64], br: [W - 70, HGT - 64] };
-  const front = figure.appendChild(document.createElement('div'));
-  front.innerHTML = svg(
-    CALLOUTS.map(({ corner: c, point: [px, py] }) => {
-      const [x, y] = corner[c];
-      return `<path d="M${x} ${y}L${px} ${py}" stroke-width="1.2" opacity="0.9"/><circle cx="${px}" cy="${py}" r="3.2" fill="#f0c050" stroke="#1a1210" stroke-width="1"/>`;
-    }).join(''),
-  );
-
-  const notes = CALLOUTS.map((c) => {
-    const box = figure.appendChild(document.createElement('div'));
-    box.className = 'stat ' + c.corner;
-    const top = box.appendChild(document.createElement('div'));
-    top.className = 'stat-top';
-    const name = top.appendChild(document.createElement('div'));
-    name.className = 'stat-name';
-    name.textContent = c.label;
-    const plus = top.appendChild(document.createElement('button'));
-    plus.className = 'stat-plus';
-    plus.textContent = '+';
+  // the fighter with an attribute on each side, laid out like the inventory's paper doll
+  const doll = make('div', 'inv-doll', top);
+  const left = make('div', 'inv-doll-col', doll);
+  const figure = make('div', 'inv-figure', doll);
+  const right = make('div', 'inv-doll-col', doll);
+  const chip = (c: StatInfo, parent: HTMLElement) => {
+    const card = make('div', 'stat-chip', parent);
+    card.title = c.what;
+    const line = make('div', 'stat-chip-top', card);
+    const name = make('div', 'stat-chip-name', line);
+    const plus = make('button', 'stat-plus', line, '+');
     plus.title = `Spend a skill point on ${c.label.toLowerCase()}`;
     plus.addEventListener('click', () => spend(c.stat));
-    const pips = box.appendChild(document.createElement('div'));
-    pips.className = 'stat-pips';
-    for (let i = 0; i < STAT_MAX; i++) pips.appendChild(document.createElement('i'));
-    const note = box.appendChild(document.createElement('div'));
-    note.className = 'stat-note';
-    return { c, name, pips, note, plus };
-  });
-  const live = el.appendChild(document.createElement('div'));
-  live.className = 'sheet-live';
+    const pips = make('div', 'stat-pips', card);
+    for (let i = 0; i < STAT_MAX; i++) make('i', '', pips);
+    const note = make('div', 'stat-chip-note', card);
+    return { c, name, note, pips, plus };
+  };
+  const chips = [...LEFT.map((c) => chip(c, left)), ...RIGHT.map((c) => chip(c, right))];
+
+  // the right-hand panel: career, then condition
+  const side = make('div', 'inv-detail', top);
+  const head = make('div', 'sheet-career', side);
+  const levelEl = make('div', 'career-level', head);
+  const moneyEl = make('div', 'career-money', head);
+  const xpBar = make('div', 'career-xp', side);
+  const xpFill = make('i', '', xpBar);
+  const xpText = make('div', 'career-xp-text', side);
+  const pointsEl = make('div', 'career-points', side);
+  make('div', 'inv-section sheet-now', side, 'Condition');
+  const now = make('div', 'inv-d-stats', side);
+  const nowRow = (label: string) => {
+    const row = make('div', 'inv-stat', now);
+    make('span', 'inv-stat-name', row, label);
+    const fill = make('i', '', make('span', 'inv-stat-bar', row));
+    const val = make('span', 'inv-stat-val', row);
+    return { fill, val };
+  };
+  const hpRow = nowRow('Health'), spRow = nowRow('Stamina');
+  const armourEl = make('div', 'sheet-armour', side);
+  make('div', 'inv-help', el, 'Win bouts to level up · each level gives a skill point · hover an attribute to see what it does');
 
   const render = () => {
     const k = career(), need = xpToNext(k.level);
     levelEl.textContent = `Level ${k.level}`;
-    xpFill.style.width = `${(k.xp / need) * 100}%`;
-    xpText.textContent = `${k.xp} / ${need} XP`;
     moneyEl.textContent = `${k.money.toLocaleString()} gold`;
+    xpFill.style.width = `${Math.min(1, k.xp / need) * 100}%`;
+    xpText.textContent = `${k.xp} / ${need} XP to level ${k.level + 1}`;
     pointsEl.hidden = k.points <= 0;
-    pointsEl.textContent = `${k.points} skill ${k.points === 1 ? 'point' : 'points'} to spend: press + beside a skill`;
-    for (const { c, name, pips, note, plus } of notes) {
+    pointsEl.textContent = `${k.points} skill ${k.points === 1 ? 'point' : 'points'} to spend: press + on an attribute`;
+    for (const { c, name, note, pips, plus } of chips) {
       const lvl = vitals.stats[c.stat];
       plus.hidden = k.points <= 0 || lvl >= STAT_MAX;
       name.textContent = `${c.label} ${ROMAN[lvl]}`;
-      Array.from(pips.children).forEach((p, i) => p.classList.toggle('on', i < lvl));
       note.textContent = c.note(vitals);
+      Array.from(pips.children).forEach((p, i) => p.classList.toggle('on', i < lvl));
     }
-    live.textContent = `Health ${Math.ceil(vitals.health)} / ${vitals.maxHealth} · Stamina ${Math.floor(vitals.stamina)} / ${vitals.maxStamina} · ${armour()}`;
+    hpRow.fill.style.width = `${(vitals.health / vitals.maxHealth) * 100}%`;
+    hpRow.val.textContent = `${Math.ceil(vitals.health)} / ${vitals.maxHealth}`;
+    spRow.fill.style.width = `${(vitals.stamina / vitals.maxStamina) * 100}%`;
+    spRow.val.textContent = `${Math.floor(vitals.stamina)} / ${vitals.maxStamina}`;
+    armourEl.textContent = armour();
   };
-  return { el, canvas, render };
+  return { el, figure, render };
 }

@@ -1,5 +1,6 @@
 import { ITEMS, SLOTS, SLOT_LABEL, iconSVG, type Slot } from './items';
 import { ZONES, type Zone } from './hits';
+import { createItemView } from './itemview';
 
 export interface Stack {
   id: string;
@@ -118,7 +119,24 @@ export interface InventoryUI {
   toast(text: string): void;
   /** Line shown above the hint bar; empty hides it. */
   prompt(html: string): void;
+  /** Where the panel lives: inside a page (the main menu) when given one, else floating in the HUD. */
+  mount(parent: HTMLElement | null): void;
+  /** The box in the middle of the paper doll, where the fighter's figure goes. */
+  readonly figure: HTMLElement;
+  /** The inventory page came into view. */
+  onShowInventory: () => void;
+  /** After the panel opens, closes or changes page. */
+  onChange: (open: boolean, tab: number) => void;
+  /** The panel's close button was pressed. */
+  onClose: () => void;
 }
+
+/** Paper-doll sides: slots down the left and right of the figure, roughly where each is worn. */
+const DOLL_LEFT: Slot[] = ['head', 'chest', 'arm', 'weapon'];
+const DOLL_RIGHT: Slot[] = ['tunic', 'belt', 'garb', 'legs'];
+const BAG_COLUMNS = 8;
+
+type Pick = { kind: 'slot'; slot: Slot } | { kind: 'bag'; i: number };
 
 /** Inventory panel, prompt line and toast messages, built into the HUD. */
 export function createInventoryUI(inv: Inventory): InventoryUI {
@@ -132,7 +150,11 @@ export function createInventoryUI(inv: Inventory): InventoryUI {
   };
   const panel = el('div', 'inv', hud);
   panel.hidden = true;
-  const tabBar = el('div', 'inv-tabs', panel);
+  const head = el('div', 'inv-head', panel);
+  const tabBar = el('div', 'inv-tabs', head);
+  const closeBtn = el('button', 'inv-close', head, '✕') as HTMLButtonElement;
+  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.addEventListener('click', () => ui.onClose());
   const pages: { btn: HTMLElement; page: HTMLElement; onShow?: () => void }[] = [];
   let current = 0;
   const show = (i: number) => {
@@ -142,52 +164,48 @@ export function createInventoryUI(inv: Inventory): InventoryUI {
       p.btn.classList.toggle('on', j === i);
     });
     pages[i].onShow?.();
+    view.setActive(!panel.hidden && current === 0);
+    ui.onChange(!panel.hidden, current);
   };
   const addTab = (name: string, page: HTMLElement, onShow?: () => void) => {
-    const i = pages.length, btn = el('div', 'inv-tab', tabBar, name);
+    const i = pages.length, btn = el('button', 'inv-tab', tabBar, name);
     btn.addEventListener('click', () => show(i));
     panel.appendChild(page);
     pages.push({ btn, page, onShow });
-    show(current);
+    if (pages.length > 1) show(current);
     return i;
   };
+
+  // --- the inventory page: paper doll | item detail, the bag underneath ---
   const invPage = document.createElement('div');
-  addTab('Inventory', invPage);
-  const body = el('div', 'inv-body', invPage);
-  const equipCol = el('div', 'inv-equip', body);
-  const bagGrid = el('div', 'inv-bag', body);
-  const info = el('div', 'inv-info', invPage);
-  el('div', 'inv-help', invPage, 'Click: equip / take off · Tab: close · Gear is fixed once an opponent is found');
+  invPage.className = 'inv-page';
+  const top = el('div', 'inv-top', invPage);
+  const dollEl = el('div', 'inv-doll', top);
+  const left = el('div', 'inv-doll-col', dollEl);
+  const figure = el('div', 'inv-figure', dollEl);
+  const right = el('div', 'inv-doll-col', dollEl);
+
+  const detail = el('div', 'inv-detail', top);
+  const viewWrap = el('div', 'inv-view', detail);
+  const viewCanvas = el('canvas', '', viewWrap) as HTMLCanvasElement;
+  el('div', 'inv-view-hint', viewWrap, 'Drag to turn · scroll to zoom');
+  const viewEmpty = el('div', 'inv-view-empty', viewWrap, 'Empty');
+  const view = createItemView(viewCanvas);
+  const dName = el('div', 'inv-d-name', detail);
+  const dKind = el('div', 'inv-d-kind', detail);
+  const dDesc = el('div', 'inv-d-desc', detail);
+  const dStats = el('div', 'inv-d-stats', detail);
+  const dAction = el('button', 'inv-d-action', detail) as HTMLButtonElement;
+
+  const bagWrap = el('div', 'inv-bag-wrap', invPage);
+  const bagHead = el('div', 'inv-section', bagWrap);
+  el('span', '', bagHead, 'Bag');
+  const bagCount = el('span', 'inv-bag-count', bagHead);
+  const bagGrid = el('div', 'inv-bag', bagWrap);
+  bagGrid.style.gridTemplateColumns = `repeat(${BAG_COLUMNS}, var(--cell))`;
+  el('div', 'inv-help', invPage, 'Click to inspect · double-click to equip or take off · gear is fixed once an opponent is found');
   const promptEl = el('div', 'prompt', hud);
   const toastEl = el('div', 'toast', hud);
-
-  const describe = (id: string | null, fallback = '') => {
-    info.textContent = '';
-    if (!id) {
-      info.textContent = fallback;
-      return;
-    }
-    const def = ITEMS[id];
-    el('b', '', info, def.name);
-    const covers = Object.entries(def.covers ?? {}).map(([z, c]) => `${ZONES[z as Zone].name} ${Math.round(c * 100)}%`);
-    const stats = def.blade
-      ? ` Force ×${def.power} · Blade ${Math.round((def.blade[1] - def.blade[0]) * 100)} cm · ${(def.edge ?? 0) >= 0.8 ? 'Sharp' : 'Blunt'}.`
-      : covers.length ? ` Protects: ${covers.join(', ')}.` : '';
-    info.append(` — ${def.desc}${stats}`);
-  };
-
-  const fill = (cell: HTMLElement, id: string | null, n = 1) => {
-    cell.querySelector('.inv-icon')!.innerHTML = id ? iconSVG(ITEMS[id]) : '';
-    cell.querySelector('.inv-count')!.textContent = n > 1 ? String(n) : '';
-    cell.classList.toggle('filled', !!id);
-  };
-  const makeCell = (parent: HTMLElement) => {
-    const cell = el('div', 'inv-cell', parent);
-    el('div', 'inv-icon', cell);
-    el('div', 'inv-count', cell);
-    cell.addEventListener('mouseleave', () => describe(null));
-    return cell;
-  };
 
   let toastTimer = 0;
   const toast = (text: string) => {
@@ -197,46 +215,127 @@ export function createInventoryUI(inv: Inventory): InventoryUI {
     toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 1800);
   };
 
-  const equipCells = SLOTS.map((slot) => {
-    const row = el('div', 'inv-slot', equipCol);
-    const cell = makeCell(row);
-    el('div', 'inv-slot-name', row, SLOT_LABEL[slot]);
-    cell.addEventListener('mouseenter', () => describe(inv.equipped[slot], `${SLOT_LABEL[slot]}: nothing`));
+  let pick: Pick | null = { kind: 'slot', slot: 'weapon' };
+  let shownId: string | null | undefined; // what the turntable holds, to skip rebuilding it
+  const pickedId = () => (!pick ? null : pick.kind === 'slot' ? inv.equipped[pick.slot] : inv.bag[pick.i]?.id ?? null);
+
+  const makeCell = (parent: HTMLElement, p: Pick, label?: string) => {
+    const wrap = label ? el('div', 'inv-slot', parent) : parent;
+    const cell = el('div', 'inv-cell', wrap);
+    el('div', 'inv-icon', cell);
+    el('div', 'inv-count', cell);
+    if (label) el('div', 'inv-slot-name', wrap, label);
     cell.addEventListener('click', () => {
+      pick = p;
+      render();
+    });
+    cell.addEventListener('dblclick', () => {
+      pick = p;
+      act();
+    });
+    return cell;
+  };
+  const equipCells = {} as Record<Slot, HTMLElement>;
+  for (const [col, slots] of [[left, DOLL_LEFT], [right, DOLL_RIGHT]] as const)
+    for (const slot of slots) equipCells[slot] = makeCell(col, { kind: 'slot', slot }, SLOT_LABEL[slot]);
+  const bagCells = inv.bag.map((_, i) => makeCell(bagGrid, { kind: 'bag', i }));
+  panel.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  /** Equip the picked bag item, or take off the picked worn one; the pick follows the item. */
+  function act() {
+    if (!pick) return;
+    if (pick.kind === 'slot') {
+      const slot = pick.slot, id = inv.equipped[slot];
       const r = inv.unequip(slot);
       if (r === 'full') toast('Bag is full');
       if (r === 'locked') toast('A slave keeps his cloth on');
       if (r === 'sealed') toast('Too late to change gear');
-    });
-    return cell;
-  });
-  const bagCells = inv.bag.map((_, i) => {
-    const cell = makeCell(bagGrid);
-    cell.addEventListener('mouseenter', () => describe(inv.bag[i]?.id ?? null));
-    cell.addEventListener('click', () => {
-      const s = inv.bag[i];
-      if (s && !inv.equipFromBag(i)) toast(inv.locked ? 'Too late to change gear' : `${ITEMS[s.id].name} can't be worn`);
-      describe(inv.bag[i]?.id ?? null);
-    });
-    return cell;
-  });
-  panel.addEventListener('contextmenu', (e) => e.preventDefault());
+      if (r === 'ok') {
+        const i = inv.bag.findIndex((s) => s?.id === id);
+        if (i >= 0) pick = { kind: 'bag', i };
+      }
+    } else {
+      const s = inv.bag[pick.i], slot = s && ITEMS[s.id].slot;
+      if (s && inv.equipFromBag(pick.i)) pick = { kind: 'slot', slot: slot! };
+      else if (s) toast(inv.locked ? 'Too late to change gear' : `${ITEMS[s.id].name} can't be worn`);
+    }
+    render();
+  }
+  dAction.addEventListener('click', act);
+
+  const fill = (cell: HTMLElement, id: string | null, n = 1) => {
+    cell.querySelector('.inv-icon')!.innerHTML = id ? iconSVG(ITEMS[id]) : '';
+    cell.querySelector('.inv-count')!.textContent = n > 1 ? String(n) : '';
+    cell.classList.toggle('filled', !!id);
+  };
+
+  const statRow = (label: string, value: string, frac?: number) => {
+    const row = el('div', 'inv-stat', dStats);
+    el('span', 'inv-stat-name', row, label);
+    if (frac !== undefined) (el('span', 'inv-stat-bar', row).appendChild(document.createElement('i')) as HTMLElement).style.width = `${Math.round(Math.min(1, frac) * 100)}%`;
+    el('span', 'inv-stat-val', row, value);
+  };
+
+  function renderDetail() {
+    const id = pickedId();
+    if (id !== shownId) {
+      view.show(id);
+      shownId = id;
+    }
+    viewEmpty.hidden = !!id;
+    dStats.replaceChildren();
+    if (!id) {
+      dName.textContent = pick?.kind === 'slot' ? SLOT_LABEL[pick.slot] : 'Empty space';
+      dKind.textContent = pick?.kind === 'slot' ? 'Nothing worn here' : 'Nothing in this space';
+      dDesc.textContent = 'Pick something from your bag to see it here.';
+      dAction.hidden = true;
+      return;
+    }
+    const def = ITEMS[id];
+    dName.textContent = def.name;
+    const worn = pick?.kind === 'slot';
+    dKind.textContent = [def.slot ? SLOT_LABEL[def.slot] : 'Valuables', worn ? 'Worn' : 'In your bag'].join(' · ');
+    dDesc.textContent = def.desc;
+    if (def.blade) {
+      statRow('Force', `×${def.power}`, (def.power ?? 1) / 2);
+      statRow('Reach', `${Math.round((def.blade[1] - def.blade[0]) * 100)} cm`, (def.blade[1] - def.blade[0]) / 0.9);
+      statRow('Edge', (def.edge ?? 0) >= 0.8 ? 'Sharp' : 'Blunt', def.edge ?? 0);
+    }
+    for (const [z, c] of Object.entries(def.covers ?? {})) statRow(ZONES[z as Zone].name, `${Math.round(c * 100)}%`, c);
+    if (!def.blade && !def.covers && def.slot) statRow('Protection', 'None');
+    if (def.price) statRow('Value', `${def.price} gold`);
+    const n = pick?.kind === 'bag' ? inv.bag[pick.i]?.n ?? 1 : 1;
+    if (n > 1) statRow('Count', String(n));
+    dAction.hidden = !def.slot || (worn && def.slot === 'garb');
+    dAction.textContent = worn ? 'Take off' : 'Equip';
+    dAction.disabled = inv.locked;
+  }
 
   const render = () => {
-    SLOTS.forEach((slot, i) => fill(equipCells[i], inv.equipped[slot]));
-    inv.bag.forEach((s, i) => fill(bagCells[i], s?.id ?? null, s?.n));
+    for (const slot of SLOTS) {
+      fill(equipCells[slot], inv.equipped[slot]);
+      equipCells[slot].classList.toggle('picked', pick?.kind === 'slot' && pick.slot === slot);
+    }
+    inv.bag.forEach((s, i) => {
+      fill(bagCells[i], s?.id ?? null, s?.n);
+      bagCells[i].classList.toggle('picked', pick?.kind === 'bag' && pick.i === i);
+    });
+    bagCount.textContent = `${inv.bag.filter(Boolean).length} / ${inv.bag.length}`;
+    renderDetail();
   };
-  render();
 
-  return {
+  const ui: InventoryUI = {
     get open() {
       return !panel.hidden;
     },
     setOpen(open: boolean, tab?: number) {
       panel.hidden = !open;
       if (open) {
-        describe(null);
+        render();
         show(tab ?? current);
+      } else {
+        view.setActive(false);
+        ui.onChange(false, current);
       }
     },
     addTab,
@@ -249,5 +348,17 @@ export function createInventoryUI(inv: Inventory): InventoryUI {
       if (promptEl.innerHTML !== html) promptEl.innerHTML = html;
       promptEl.classList.toggle('show', !!html);
     },
+    mount(parent: HTMLElement | null) {
+      const to = parent ?? hud;
+      if (panel.parentElement !== to) to.appendChild(panel);
+      panel.classList.toggle('docked', !!parent);
+    },
+    figure,
+    onShowInventory: () => {},
+    onChange: () => {},
+    onClose: () => ui.setOpen(false),
   };
+  addTab('Inventory', invPage, () => ui.onShowInventory());
+  render();
+  return ui;
 }

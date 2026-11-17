@@ -39,7 +39,7 @@ export function cleanName(text: unknown): string {
   return text.replace(/[\p{C}]/gu, '').replace(/\s+/g, ' ').trim().slice(0, NAME_LENGTH).trim();
 }
 
-/** How to find the opponent: anyone in the open queue, or a friend by code (as the one who made it, or the one joining). */
+/** How to find a match: the open free-for-all queue, or a duel with a friend by code (as the one who made it, or the one joining). */
 export type Mode = { kind: 'queue' } | { kind: 'host'; code: string } | { kind: 'join'; code: string };
 /** Why a search gave up: the code is already in use (host should pick another), nobody is waiting on it, or the server could not be reached. */
 export type Failure = 'taken' | 'missing' | 'unreachable';
@@ -62,20 +62,33 @@ export type Msg =
   | { t: 'dead' }
   /** Wants to fight again on the same connection. */
   | { t: 'rematch' }
-  /** Has left for good (back to the room, or a new opponent). */
+  /** Has left for good (back to the menu, or a new match). */
   | { t: 'leave' };
 
+/** A fighter in a lobby or match: their seat (also their gate) and the name the server knows them by. */
+export interface Seat {
+  seat: number;
+  name: string;
+  /** In a lobby: has voted to start early. */
+  vote?: boolean;
+}
+
 export interface Link {
-  /** The host fights from the north gate, the guest from the south. */
-  readonly host: boolean;
-  /** The opponent's account name, vouched for by the server; null for a guest (then only their `gear` name is known). */
-  readonly foe: string | null;
-  send(m: Msg): void;
+  /** Free-for-all (the open queue) or a duel (friend code). */
+  readonly mode: 'ffa' | 'duel';
+  /** Our seat, which is also the gate we enter from. */
+  readonly seat: number;
+  /** Everyone in the match, us included. */
+  readonly players: Seat[];
+  /** To every other fighter, or only to the one in seat `to`. */
+  send(m: Msg, to?: number): void;
 }
 
 export interface Search {
-  /** Stop searching, or hang up on the opponent (after `graceMs`, to let a last message out). Fires no callbacks. */
+  /** Stop searching, or leave the match (after `graceMs`, to let a last message out). Fires no callbacks. */
   close(graceMs?: number): void;
+  /** In a free-for-all lobby: vote to start without waiting for it to fill (or take the vote back). */
+  vote(on: boolean): void;
 }
 
 /**
@@ -108,14 +121,30 @@ type Frame = { op?: unknown; [k: string]: unknown };
 /** Callbacks for a search, plus `token` (a logged-in session) so the server can record the result. */
 export function findOpponent(
   mode: Mode,
-  on: { found(link: Link): void; message(m: Msg): void; lost(): void; failed(why: Failure): void; profile?(p: unknown): void },
+  on: {
+    found(link: Link): void;
+    /** A message from the fighter in seat `from`. */
+    message(m: Msg, from: number): void;
+    /** The fighter in `seat` has left the match. */
+    left(seat: number): void;
+    /** Our own connection is gone. */
+    lost(): void;
+    failed(why: Failure): void;
+    profile?(p: unknown): void;
+    /** Connected and the search is in with the server: now waiting for an opponent. */
+    waiting?(): void;
+    /** Free-for-all lobby: who is in it and who has voted to start, whenever that changes. */
+    lobby?(seat: number, players: Seat[]): void;
+  },
   token: string | null = null,
+  name = '',
 ): Search {
   let closed = false, matched = false;
   let heard = performance.now();
   let pc: RTCPeerConnection | null = null, dc: RTCDataChannel | null = null;
-  /** State numbering: the data channel may deliver out of order, so older states are dropped. */
-  let sentN = 0, seenN = -1;
+  /** State numbering: the data channel may deliver out of order, so older states are dropped (per sender). */
+  let sentN = 0;
+  const seenN = new Map<number, number>();
   /** Signalling steps run one after another: a candidate must wait for the offer it belongs to. */
   let signalling: Promise<unknown> = Promise.resolve();
 
@@ -129,7 +158,7 @@ export function findOpponent(
     if (!closed && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(f));
   };
 
-  /** The connection is gone: before pairing that is a failed search, after it a lost opponent. */
+  /** The connection is gone: before the match starts that is a failed search, after it a lost match. */
   function end() {
     if (closed) return;
     const wasMatched = matched;
@@ -139,10 +168,16 @@ export function findOpponent(
   }
 
   function state(f: Frame) {
-    if (!matched || typeof f.n !== 'number' || f.n <= seenN || !f.m || typeof f.m !== 'object') return;
-    seenN = f.n;
-    on.message(f.m as Msg);
+    if (!matched || typeof f.n !== 'number' || typeof f.from !== 'number' || !f.m || typeof f.m !== 'object') return;
+    if (f.n <= (seenN.get(f.from) ?? -1)) return;
+    seenN.set(f.from, f.n);
+    on.message(f.m as Msg, f.from);
   }
+  const seats = (x: unknown): Seat[] =>
+    Array.isArray(x)
+      ? x.filter((p) => p && typeof p.seat === 'number' && p.seat >= 0 && p.seat < 4)
+          .map((p) => ({ seat: p.seat, name: typeof p.name === 'string' ? p.name.slice(0, NAME_LENGTH) : '', vote: p.vote === true }))
+      : [];
 
   function frame(raw: unknown) {
     if (closed || typeof raw !== 'string') return;
@@ -155,10 +190,13 @@ export function findOpponent(
     if (!f || typeof f !== 'object') return;
     heard = performance.now();
     switch (f.op) {
-      case 'paired':
-        if (matched) return;
+      case 'lobby':
+        if (!matched && typeof f.seat === 'number') on.lobby?.(f.seat, seats(f.players));
+        return;
+      case 'start':
+        if (matched || typeof f.seat !== 'number') return;
         matched = true;
-        on.found({ host: f.host === true, foe: typeof f.foe === 'string' ? f.foe : null, send });
+        on.found({ mode: f.mode === 'duel' ? 'duel' : 'ffa', seat: f.seat, players: seats(f.players), send });
         return;
       case 'fail':
         if (matched) return;
@@ -166,12 +204,13 @@ export function findOpponent(
         on.failed(f.why === 'taken' || f.why === 'missing' ? f.why : 'unreachable');
         return;
       case 'msg':
-        if (matched && f.m && typeof f.m === 'object') on.message(f.m as Msg);
+        if (matched && f.m && typeof f.m === 'object' && typeof f.from === 'number') on.message(f.m as Msg, f.from);
         return;
       case 's':
         return state(f);
-      case 'gone':
-        return end();
+      case 'left':
+        if (matched && typeof f.seat === 'number') on.left(f.seat);
+        return;
       case 'profile':
         on.profile?.(f.profile);
         return;
@@ -212,9 +251,9 @@ export function findOpponent(
       .catch(() => {});
   }
 
-  function send(m: Msg) {
+  function send(m: Msg, to?: number) {
     if (closed) return;
-    if (m.t !== 's') return out({ op: 'msg', m });
+    if (m.t !== 's') return out(to === undefined ? { op: 'msg', m } : { op: 'msg', m, to });
     const raw = JSON.stringify({ op: 's', n: sentN++, m });
     if (dc?.readyState === 'open') {
       try {
@@ -224,8 +263,10 @@ export function findOpponent(
     if (ws.readyState === WebSocket.OPEN) ws.send(raw);
   }
 
-  ws.onopen = () =>
-    out({ op: 'find', mode: mode.kind, ...(mode.kind === 'queue' ? {} : { code: mode.code }), ...(token ? { token } : {}) });
+  ws.onopen = () => {
+    out({ op: 'find', mode: mode.kind, name, ...(mode.kind === 'queue' ? {} : { code: mode.code }), ...(token ? { token } : {}) });
+    if (!closed) on.waiting?.();
+  };
   ws.onmessage = (e) => frame(e.data);
   ws.onclose = end;
   ws.onerror = end;
@@ -251,6 +292,9 @@ export function findOpponent(
           close();
         }, graceMs);
       } else close();
+    },
+    vote(on: boolean) {
+      out({ op: 'vote', on });
     },
   };
 }
