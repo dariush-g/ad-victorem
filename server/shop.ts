@@ -11,10 +11,12 @@ export const PRICES: Record<string, number> = {
   tunica_russa: 80,
   balteus: 100,
   manica: 200,
+  parma: 280,
   ocreae: 250,
   galea: 300,
   pectorale: 350,
   gladius: 400,
+  hasta: 450,
 };
 
 /** Every item a gladiator can own. */

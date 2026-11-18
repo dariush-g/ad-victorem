@@ -3,7 +3,7 @@ import { createArena, groundHeight, ceilingAt, confine, site, spawnPoint, gateYa
 import { createPost, BASE_CHROMA } from './post';
 import { loadGladiator, type Gladiator, isAttack, MOVE_INFO, MOVE_KINDS, HEAVY_CHARGE_BONUS, type MoveKind } from './gladiator';
 import { ITEMS, SLOTS, SHOP, STARTER, iconSVG } from './items';
-import { Inventory, createInventoryUI } from './inventory';
+import { Inventory, createInventoryUI, clashingSlot } from './inventory';
 import { findOpponent, makeCode, cleanCode, cleanName, type Link, type Mode, type Msg, type Search, type Seat } from './net';
 import { account, buyItem, fetchLeaderboard, USERNAME, PASSWORD_MIN } from './account';
 import {
@@ -201,7 +201,7 @@ function syncInventory(layout: unknown) {
   for (const id of own) {
     if (seen.has(id) || !Object.hasOwn(ITEMS, id)) continue;
     const slot = ITEMS[id].slot;
-    if (layout == null && slot && !inventory.equipped[slot]) inventory.equipped[slot] = id;
+    if (layout == null && slot && !inventory.equipped[slot] && !clashingSlot(inventory.equipped, id)) inventory.equipped[slot] = id;
     else inventory.add(id);
   }
   // never without a loincloth
@@ -434,6 +434,8 @@ function onMessage(m: Msg, from: number) {
         const id = m.gear?.[slot];
         foe.body.equip(slot, typeof id === 'string' && Object.hasOwn(ITEMS, id) && ITEMS[id].slot === slot ? id : null);
       }
+      // nobody carries a shield with a two-handed weapon
+      if (foe.body.held('weapon') && ITEMS[foe.body.held('weapon')!].twoHanded) foe.body.equip('shield', null);
       break;
     case 's':
       if (!Array.isArray(m.p) || !Array.isArray(m.v) || !Array.isArray(m.m)) break;
@@ -476,16 +478,22 @@ function onMessage(m: Msg, from: number) {
       const front = -(Math.sin(player.facing) * x + Math.cos(player.facing) * z) > FRONT_COS;
       if (front && player.parrying) {
         link.send({ t: 'parried' }, from);
-        riposteUntil = performance.now() + RIPOSTE_MS;
+        // a weapon that leaves its wielder reeling longer (the spear) gives a longer opening
+        const theirs = foe.body.held('weapon');
+        riposteUntil = performance.now() + RIPOSTE_MS * ((theirs && ITEMS[theirs].parriedStun) || 1);
         ui.toast('Parried · strike now!');
         impact(0.1, 0.4);
         break;
       }
-      if (front && player.blocking) {
-        const cost = d * BLOCK_STAMINA;
+      // a shield covers a wider arc than a blade held across the body, for less stamina, and lets less through
+      const shield = inventory.equipped.shield ? ITEMS[inventory.equipped.shield].guard : undefined;
+      const guard = shield ?? { cost: BLOCK_STAMINA, chip: BLOCK_CHIP, arc: FRONT_COS };
+      const covered = -(Math.sin(player.facing) * x + Math.cos(player.facing) * z) > guard.arc;
+      if (covered && player.blocking) {
+        const cost = d * guard.cost;
         if (vitals.stamina >= cost) {
           vitals.spend(cost);
-          vitals.hurt(d * BLOCK_CHIP);
+          vitals.hurt(d * guard.chip);
           link.send({ t: 'blocked' }, from);
           player.vel.x += x * 1.5;
           player.vel.z += z * 1.5;
@@ -978,7 +986,8 @@ function closeShop(backToMenu = true) {
 /** What an item does, in a few words. */
 function itemEffect(id: string) {
   const d = ITEMS[id];
-  if (d.power) return `Weapon · hit force ×${d.power} · ${(d.edge ?? 0) >= 0.7 ? 'sharp' : 'blunt'}`;
+  if (d.power) return `Weapon · hit force ×${d.power} · ${(d.edge ?? 0) >= 0.7 ? 'sharp' : 'blunt'}${d.twoHanded ? ' · two-handed, long reach' : ''}`;
+  if (d.guard) return 'Shield · hold E to block: cheaper and wider than a blade';
   const cover = Object.entries(d.covers ?? {}).map(([z, p]) => `${ZONES[z as keyof typeof ZONES].name} ${Math.round(p * 100)}%`);
   return cover.length ? `Armour · ${cover.join(', ')}` : 'No protection: for the look';
 }

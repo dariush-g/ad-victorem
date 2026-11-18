@@ -10,6 +10,7 @@ const EXPOSURE = 1.15;
 const VIEW: Record<string, [[number, number], number]> = {
   head: [[2.5, 7], -0.6], // from the side, a little above: dome, cheek pieces and crest
   chest: [[8, 4], -0.3],
+  shield: [[8, 3], -0.2], // from above and in front: the painted face and the boss
   arm: [[4, 7], -0.4],
   legs: [[7, 5], -0.3],
   belt: [[8, 4], -0.4],

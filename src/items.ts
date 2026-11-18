@@ -3,9 +3,9 @@ import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeom
 import { mat, solid, PALETTE } from './style';
 import type { Zone } from './hits';
 
-export type Slot = 'weapon' | 'head' | 'tunic' | 'chest' | 'arm' | 'garb' | 'belt' | 'legs';
-export const SLOTS: Slot[] = ['weapon', 'head', 'tunic', 'chest', 'arm', 'garb', 'belt', 'legs'];
-export const SLOT_LABEL: Record<Slot, string> = { weapon: 'Weapon', head: 'Head', tunic: 'Tunic', chest: 'Chest', arm: 'Arm', garb: 'Loincloth', belt: 'Belt', legs: 'Legs' };
+export type Slot = 'weapon' | 'shield' | 'head' | 'tunic' | 'chest' | 'arm' | 'garb' | 'belt' | 'legs';
+export const SLOTS: Slot[] = ['weapon', 'shield', 'head', 'tunic', 'chest', 'arm', 'garb', 'belt', 'legs'];
+export const SLOT_LABEL: Record<Slot, string> = { weapon: 'Weapon', shield: 'Shield', head: 'Head', tunic: 'Tunic', chest: 'Chest', arm: 'Arm', garb: 'Loincloth', belt: 'Belt', legs: 'Legs' };
 
 export interface ItemDef {
   id: string;
@@ -15,12 +15,19 @@ export interface ItemDef {
   slot?: Slot;
   /** How many fit in one bag space. */
   stack: number;
-  icon: 'sword' | 'cloth' | 'belt' | 'coin' | 'tunic' | 'helmet' | 'plate' | 'greave' | 'arm';
+  icon: 'sword' | 'spear' | 'shield' | 'cloth' | 'belt' | 'coin' | 'tunic' | 'helmet' | 'plate' | 'greave' | 'arm';
   tint: string; // icon colour
   /** Weapons: how hard it hits (×), the striking part along the blade (metres from the grip), and how well it cuts (0 blunt .. 1 sharp; sets bleeding). */
   power?: number;
   blade?: [number, number];
   edge?: number;
+  /** Weapons: needs both hands, so no shield can be carried with it. */
+  twoHanded?: boolean;
+  /** Weapons: how much longer than usual you reel when one of your blows is parried (×). */
+  parriedStun?: number;
+  /** Shields: what holding it up (E) costs and stops. `cost` is stamina per point of damage, `chip` the share
+   *  that still gets through, `arc` the cosine of the widest angle off your facing that it covers. */
+  guard?: { cost: number; chip: number; arc: number };
   /** Clothing: cloth colour. */
   color?: number;
   /** Armour: share of a blow to each body zone that this piece turns away. */
@@ -32,6 +39,8 @@ export interface ItemDef {
 const defs: ItemDef[] = [
   { id: 'rudis', name: 'Wooden sword', desc: 'Training sword. Heavy, blunt, and yours until you earn better.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#b9793f', power: 1, blade: [0.1, 0.83], edge: 0.3 },
   { id: 'gladius', price: 400, name: 'Short sword', desc: 'Iron sword of the legions. Shorter than the wooden one, and hits far harder.', slot: 'weapon', stack: 1, icon: 'sword', tint: '#cfd3da', power: 1.7, blade: [0.1, 0.64], edge: 1 },
+  { id: 'hasta', price: 450, name: 'Spear', desc: 'Ash shaft, iron head, held in both hands. The longest reach in the arena, but a parried thrust leaves you open far longer, and there is no hand free for a shield.', slot: 'weapon', stack: 1, icon: 'spear', tint: '#a9683a', power: 1.4, blade: [1.27, 1.6], edge: 0.9, twoHanded: true, parriedStun: 1.6 },
+  { id: 'parma', price: 280, name: 'Round shield', desc: 'Wooden shield faced with painted leather, with a bronze rim and boss. Carried on the left arm: hold E to raise it.', slot: 'shield', stack: 1, icon: 'shield', tint: '#9a2e2a', covers: { armL: 0.5 }, guard: { cost: 1.1, chip: 0.04, arc: -0.15 } },
   { id: 'subligaculum', name: 'Loincloth', desc: 'Undyed linen. What every slave is issued.', slot: 'garb', stack: 1, icon: 'cloth', tint: '#dccdaa', color: 0xd9c9a6 },
   { id: 'subligaculum_red', price: 40, name: 'Red loincloth', desc: 'Loincloth dyed with madder root. The crowd can pick you out from the top row.', slot: 'garb', stack: 1, icon: 'cloth', tint: '#b33a34', color: PALETTE.crimson },
   { id: 'cord', price: 30, name: 'Rope belt', desc: 'A length of rope, knotted at the hip.', slot: 'belt', stack: 1, icon: 'belt', tint: '#b89a62' },
@@ -55,6 +64,8 @@ export const ALL_GEAR = [...STARTER, ...SHOP.map((d) => d.id)];
 // ------------------------------------------------------------------ icons
 
 const ICON_PATHS: Record<ItemDef['icon'], string> = {
+  spear: '<path d="M30 2l-2 7-3-3z" fill="#cfd3da"/><path d="M25.5 6.5l1.5 1.5L4 31l-1.5-1.5z" fill="$C"/>',
+  shield: '<circle cx="16" cy="16" r="13" fill="$C" stroke="#c9954a" stroke-width="2.5"/><circle cx="16" cy="16" r="4" fill="#c9954a"/>',
   sword: '<path d="M25 3l4 4-13 14-4-4z" fill="$C"/><path d="M9 15l8 8-2 2-8-8z" fill="#5a3a22"/><path d="M10 20l2 2-6 6-2-2z" fill="#7a4d2c"/><circle cx="4.5" cy="27.5" r="2.2" fill="#5a3a22"/>',
   cloth: '<path d="M5 8h22v6c-3 2-6 2-7 5l-2 9h-4l-2-9c-1-3-4-3-7-5z" fill="$C"/><path d="M5 8h22v3H5z" fill="#0003"/><path d="M13 16l1 11M19 16l-1 11M16 15v13" stroke="#0003" fill="none"/>',
   belt: '<ellipse cx="16" cy="16" rx="12" ry="7" fill="none" stroke="$C" stroke-width="4.5"/><rect x="12" y="19.5" width="8" height="7" rx="1.5" fill="none" stroke="#d8a94e" stroke-width="2"/>',
@@ -86,7 +97,8 @@ const part = (geo: THREE.BufferGeometry, m: THREE.Material, parent: THREE.Object
 /** A weapon held by its grip at the origin, blade along +Y. */
 export function buildWeapon(id: string): THREE.Group {
   const g = new THREE.Group();
-  if (id === 'gladius') {
+  if (id === 'hasta') buildSpear(g);
+  else if (id === 'gladius') {
     const steel = mat(PALETTE.steel, { rim: 0.2, surface: 'metal', side: THREE.DoubleSide });
     const bronze = mat(PALETTE.bronze, { rim: 0.2, surface: 'metal' });
     const grip = mat(PALETTE.woodDark, { rim: 0.2, surface: 'wood' });
@@ -129,6 +141,57 @@ export function buildWeapon(id: string): THREE.Group {
   return g;
 }
 
+/** A flat, diamond-section blade with a hard edge: `profile` is [height, half width] pairs from the base up. */
+function flatBlade(profile: readonly (readonly [number, number])[], thick: number) {
+  const pts: number[] = [], idx: number[] = [];
+  profile.forEach(([y, w], i) => {
+    const t = i === profile.length - 1 ? 0.0006 : thick;
+    pts.push(-w, y, 0, 0, y, t, w, y, 0, 0, y, -t);
+    if (i === 0) return;
+    const a = (i - 1) * 4, b = i * 4;
+    for (let k = 0; k < 4; k++) {
+      const k2 = (k + 1) % 4;
+      idx.push(a + k, a + k2, b + k, a + k2, b + k2, b + k);
+    }
+  });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  geo.setIndex(idx);
+  const flat = geo.toNonIndexed();
+  flat.computeVertexNormals();
+  return flat;
+}
+
+/** Where the spear's shaft ends below the grip, and where its iron head starts (metres along +Y). */
+export const SPEAR_BUTT = -0.3, SPEAR_HEAD = 1.3; // short behind the grip, so the butt clears the body
+/** Spear: ash shaft gripped about a quarter of the way up, a socketed leaf-shaped iron head, a small butt spike. */
+function buildSpear(g: THREE.Group) {
+  const ash = mat(PALETTE.wood, { rim: 0.2, surface: 'wood' });
+  const iron = mat(PALETTE.steel, { rim: 0.2, surface: 'metal', side: THREE.DoubleSide });
+  const len = SPEAR_HEAD - SPEAR_BUTT;
+  part(new THREE.CylinderGeometry(0.016, 0.018, len, 12), ash, g, 0, SPEAR_BUTT + len / 2, 0);
+  part(new THREE.CylinderGeometry(0.013, 0.02, 0.09, 12), iron, g, 0, SPEAR_HEAD - 0.03, 0); // socket
+  part(flatBlade([[0, 0.012], [0.05, 0.03], [0.15, 0.027], [0.3, 0.0006]], 0.006), iron, g, 0, SPEAR_HEAD + 0.01, 0);
+  part(new THREE.ConeGeometry(0.018, 0.07, 10).rotateX(Math.PI), iron, g, 0, SPEAR_BUTT - 0.03, 0);
+}
+
+/** Round shield, face along +Z with its centre at the origin: painted leather over wood, bronze rim and boss. */
+export function buildShield(): THREE.Group {
+  const g = new THREE.Group();
+  const face = mat(PALETTE.crimson, { rim: 0.2, surface: 'leather' });
+  const wood = mat(PALETTE.woodDark, { rim: 0.2, surface: 'wood' });
+  const bronze = mat(PALETTE.bronze, { rim: 0.25, surface: 'metal' });
+  const R = 0.28;
+  // a shallow dome: a slice off a big sphere, so the face bows out a little
+  const dome = 0.9, cap = Math.asin(R / dome);
+  part(new THREE.SphereGeometry(dome, 48, 6, 0, Math.PI * 2, 0, cap).rotateX(Math.PI / 2), face, g, 0, 0, -dome * Math.cos(cap) + 0.005);
+  part(new THREE.CylinderGeometry(R, R, 0.02, 48, 1).rotateX(Math.PI / 2), wood, g, 0, 0, -0.008);
+  part(new THREE.TorusGeometry(R, 0.011, 8, 64), bronze, g, 0, 0, 0.002);
+  part(new THREE.SphereGeometry(0.065, 24, 12, 0, Math.PI * 2, 0, Math.PI / 2).rotateX(Math.PI / 2), bronze, g, 0, 0, 0.04);
+  part(new THREE.TorusGeometry(0.075, 0.008, 8, 32), bronze, g, 0, 0, 0.042);
+  return g;
+}
+
 /** How an item looks lying on the sand; origin at ground level. */
 export function buildGroundMesh(id: string): THREE.Group {
   const def = ITEMS[id], g = new THREE.Group();
@@ -137,6 +200,11 @@ export function buildGroundMesh(id: string): THREE.Group {
     w.rotation.set(Math.PI / 2, 0, 0.12); // flat on its side
     w.position.y = 0.035;
     g.add(w);
+  } else if (def.slot === 'shield') {
+    const sh = buildShield();
+    sh.rotation.x = -Math.PI / 2; // lying face up
+    sh.position.y = 0.04;
+    g.add(sh);
   } else if (def.slot === 'head' || def.slot === 'chest' || def.slot === 'legs' || def.slot === 'arm') {
     // armour lying in the sand, simplified to its main shape
     const metal = mat(PALETTE.bronze, { rim: 0.25, surface: 'metal', side: THREE.DoubleSide });

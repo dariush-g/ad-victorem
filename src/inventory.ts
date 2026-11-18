@@ -1,4 +1,12 @@
 import { ITEMS, SLOTS, SLOT_LABEL, iconSVG, type Slot } from './items';
+
+/** The slot an item can't be worn with: a two-handed weapon and a shield rule each other out. */
+export function clashingSlot(equipped: Record<Slot, string | null>, id: string): Slot | null {
+  const def = ITEMS[id];
+  if (def.slot === 'weapon' && def.twoHanded && equipped.shield) return 'shield';
+  if (def.slot === 'shield' && equipped.weapon && ITEMS[equipped.weapon].twoHanded) return 'weapon';
+  return null;
+}
 import { ZONES, type Zone } from './hits';
 import { createItemView } from './itemview';
 
@@ -77,19 +85,43 @@ export class Inventory {
       if (known(id) && ITEMS[id].slot === slot) this.equipped[slot] = id;
       else if (slot !== 'garb') this.equipped[slot] = null; // never left without a loincloth
     }
+    // a two-handed weapon and a shield together: the shield goes back in the bag
+    const sh = this.equipped.shield;
+    if (sh && clashingSlot(this.equipped, sh)) {
+      this.equipped.shield = null;
+      const free = this.bag.indexOf(null);
+      if (free >= 0) this.bag[free] = { id: sh, n: 1 };
+    }
     this.onChange();
     return true;
   }
 
-  /** Equip the item in a bag space; whatever it replaces takes that space. */
-  equipFromBag(i: number): boolean {
+  /**
+   * Equip the item in a bag space; whatever it replaces takes that space. A two-handed weapon takes the
+   * shield off (and a shield the two-handed weapon), into a free space: 'full' if there is none.
+   */
+  equipFromBag(i: number): 'ok' | 'full' | 'no' {
     const s = this.bag[i], slot = s && ITEMS[s.id].slot;
-    if (!s || !slot || this.locked) return false;
+    if (!s || !slot || this.locked) return 'no';
+    const clash = clashingSlot(this.equipped, s.id);
     const old = this.equipped[slot];
+    if (clash) {
+      // the clashing item needs a space of its own, unless this one leaves its space empty
+      const free = this.bag.findIndex((b, j) => !b && j !== i);
+      const to = free >= 0 ? free : old ? -1 : i;
+      if (to < 0) return 'full';
+      this.bag[to] = { id: this.equipped[clash]!, n: 1 };
+      this.equipped[clash] = null;
+      if (to === i) {
+        this.equipped[slot] = s.id;
+        this.onChange();
+        return 'ok';
+      }
+    }
     this.equipped[slot] = s.id;
     this.bag[i] = old ? { id: old, n: 1 } : null;
     this.onChange();
-    return true;
+    return 'ok';
   }
 
   /** Move an equipped item back to the bag. The loincloth can be swapped but never simply removed. */
@@ -133,7 +165,7 @@ export interface InventoryUI {
 
 /** Paper-doll sides: slots down the left and right of the figure, roughly where each is worn. */
 const DOLL_LEFT: Slot[] = ['head', 'chest', 'arm', 'weapon'];
-const DOLL_RIGHT: Slot[] = ['tunic', 'belt', 'garb', 'legs'];
+const DOLL_RIGHT: Slot[] = ['tunic', 'belt', 'garb', 'legs', 'shield'];
 const BAG_COLUMNS = 8;
 
 type Pick = { kind: 'slot'; slot: Slot } | { kind: 'bag'; i: number };
@@ -256,7 +288,9 @@ export function createInventoryUI(inv: Inventory): InventoryUI {
       }
     } else {
       const s = inv.bag[pick.i], slot = s && ITEMS[s.id].slot;
-      if (s && inv.equipFromBag(pick.i)) pick = { kind: 'slot', slot: slot! };
+      const r = s ? inv.equipFromBag(pick.i) : 'no';
+      if (r === 'ok') pick = { kind: 'slot', slot: slot! };
+      else if (r === 'full') toast('Bag is full: no room to put the other hand\'s gear away');
       else if (s) toast(inv.locked ? 'Too late to change gear' : `${ITEMS[s.id].name} can't be worn`);
     }
     render();
@@ -298,8 +332,14 @@ export function createInventoryUI(inv: Inventory): InventoryUI {
     dDesc.textContent = def.desc;
     if (def.blade) {
       statRow('Force', `×${def.power}`, (def.power ?? 1) / 2);
-      statRow('Reach', `${Math.round((def.blade[1] - def.blade[0]) * 100)} cm`, (def.blade[1] - def.blade[0]) / 0.9);
+      statRow('Reach', `${Math.round(def.blade[1] * 100)} cm`, def.blade[1] / 1.7);
       statRow('Edge', (def.edge ?? 0) >= 0.8 ? 'Sharp' : 'Blunt', def.edge ?? 0);
+      if (def.twoHanded) statRow('Grip', 'Two hands: no shield');
+      if (def.parriedStun) statRow('Parried', `Reel ×${def.parriedStun} as long`, def.parriedStun / 2);
+    }
+    if (def.guard) {
+      statRow('Block cost', `${def.guard.cost} stamina per damage`, 1 - def.guard.cost / 2.2);
+      statRow('Block arc', `${Math.round((Math.acos(def.guard.arc) * 360) / Math.PI)}°`, Math.acos(def.guard.arc) / Math.PI);
     }
     for (const [z, c] of Object.entries(def.covers ?? {})) statRow(ZONES[z as Zone].name, `${Math.round(c * 100)}%`, c);
     if (!def.blade && !def.covers && def.slot) statRow('Protection', 'None');

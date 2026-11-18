@@ -4,7 +4,7 @@ import { mat, simplifyTexture, PALETTE } from './style';
 import { Verlet } from './ragdoll';
 import { Outfit } from './outfit';
 import { analyzeBody } from './garments';
-import { ITEMS, SLOTS, buildWeapon, disposeTree, type Slot } from './items';
+import { ITEMS, SLOTS, buildWeapon, buildShield, disposeTree, type Slot } from './items';
 import type { Part } from './hits';
 
 // Body: "Universal Base Characters" by Quaternius (CC0) — see public/models/gladiator/LICENSE.txt
@@ -189,6 +189,19 @@ export class Gladiator {
   private outfit: Outfit;
   private weaponMount: THREE.Group;
   private weapon: THREE.Object3D | null = null;
+  /** Strapped to the outside of the left forearm: the shield's face looks along the forearm's +X. */
+  private shieldMount: THREE.Group;
+  private shield: THREE.Object3D | null = null;
+  /** The reel after being parried, stretched for weapons that leave you open longer. */
+  private parriedMove: Move = REACTIONS.parried;
+  /** Where the spear is held this frame (root frame: grip point and the way the head points), and where it was when a move cut in. */
+  private spearNow = { h: new THREE.Vector3(), d: new THREE.Vector3(0, 0, 1) };
+  private chainSpear = { h: new THREE.Vector3(), d: new THREE.Vector3(0, 0, 1) };
+  /** World rotation the right hand is turned to, to point the spear. */
+  private gripQ = new THREE.Quaternion();
+  /** The same for the left hand on the shaft, and how firmly it holds it (0..1: blends its fingers into a fist). */
+  private gripQL = new THREE.Quaternion();
+  private gripL = 0;
   private worn = Object.fromEntries(SLOTS.map((s) => [s, null])) as Record<Slot, string | null>;
   /** Standing height in metres, measured from the model. */
   height = 1.8;
@@ -370,6 +383,8 @@ export class Gladiator {
     );
     this.weaponMount = group(this.armR.hand, new THREE.Vector3(GRIP.x, GRIP.y, GRIP.z));
     this.weaponMount.rotation.x = Math.PI / 2; // weapons are built blade-along-+Y
+    this.shieldMount = group(this.armL.lower, new THREE.Vector3(SHIELD_OUT, -this.armL.hand.position.length() * 0.72, 0));
+    this.shieldMount.rotation.y = Math.PI / 2; // shields are built face-along-+Z
 
     this.joints = [
       this.hips, this.spine, this.head,
@@ -388,12 +403,30 @@ export class Gladiator {
   equip(slot: Slot, id: string | null) {
     if (this.worn[slot] === id) return;
     this.worn[slot] = id;
-    if (slot !== 'weapon') this.outfit.set(slot, id);
+    if (slot === 'shield') {
+      if (this.shield) disposeTree(this.shield);
+      this.shield = id ? buildShield() : null;
+      if (this.shield) this.shieldMount.add(this.shield);
+    } else if (slot !== 'weapon') this.outfit.set(slot, id);
     else {
       if (this.weapon) disposeTree(this.weapon);
       this.weapon = id ? buildWeapon(id) : null;
       if (this.weapon) this.weaponMount.add(this.weapon);
+      const stun = (id && ITEMS[id].parriedStun) || 1;
+      this.parriedMove = stun === 1 ? REACTIONS.parried : { ...REACTIONS.parried, time: REACTIONS.parried.time * stun };
     }
+  }
+  /** What is worn or held in a slot. */
+  held(slot: Slot): string | null {
+    return this.worn[slot];
+  }
+  /** A two-handed spear in hand: its own moves, both hands on the shaft. */
+  private get spear() {
+    return !!this.worn.weapon && !!ITEMS[this.worn.weapon].twoHanded;
+  }
+  /** A shield on the left arm (and a hand free to hold it). */
+  private get shielded() {
+    return !!this.worn.shield && !this.spear;
   }
 
   get attacking() {
@@ -437,10 +470,17 @@ export class Gladiator {
   }
   /** The attacks on offer: sword swings with a weapon in hand, punches without. */
   private get moves() {
-    return this.armed ? ATTACKS : PUNCHES;
+    return this.spear ? SPEAR_ATTACKS : this.armed ? ATTACKS : PUNCHES;
   }
   private moveDef(kind: MoveKind): Move {
-    return isAttack(kind) ? this.moves[kind] : REACTIONS[kind];
+    if (isAttack(kind)) return this.moves[kind];
+    if (kind === 'parry' && this.spear) return SPEAR_PARRY;
+    if (kind === 'parried') return this.parriedMove;
+    return REACTIONS[kind];
+  }
+  /** The stance a move starts from and settles back into. */
+  private get readyPose() {
+    return this.spear ? READY_SPEAR : this.armed ? READY : READY_BARE;
   }
   /** Fall limp on the spot and stay down (death). */
   collapse() {
@@ -452,7 +492,11 @@ export class Gladiator {
     // cut straight from one move into the next (a combo, a dodge out of a swing): start the new one from
     // the pose the body is in now, at full weight, instead of fading back toward the stance first
     this.chained = this.move !== null;
-    if (this.chained) for (const ch of CHANNELS) this.chainFrom[ch] = this.smoothed[ch] ?? (this.armed ? READY : READY_BARE)[ch];
+    if (this.chained) {
+      for (const ch of CHANNELS) this.chainFrom[ch] = this.smoothed[ch] ?? this.readyPose[ch];
+      this.chainSpear.h.copy(this.spearNow.h);
+      this.chainSpear.d.copy(this.spearNow.d);
+    }
     this.move = this.moveDef(kind);
     this.moveKind = kind;
     this.moveT = 0;
@@ -591,7 +635,7 @@ export class Gladiator {
       l.bone.quaternion.copy(_q2).multiply(_q);
     }
     for (const f of this.fingers) {
-      const curl = f.right && this.armed ? FIST_CURL * f.weight : this.curlL * f.relaxed;
+      const curl = f.right && this.armed ? FIST_CURL * f.weight : lerp(this.curlL * f.relaxed, FIST_CURL * f.weight, f.right ? 0 : this.gripL);
       f.bone.quaternion.copy(f.bind).multiply(_q.setFromAxisAngle(f.axis, curl));
     }
   }
@@ -616,7 +660,7 @@ export class Gladiator {
     if (c.attack) this.pressT = 0;
     else if (this.pressT >= 0) this.pressT += dt;
     if (!c.attackHeld) this.pressT = -1; // let go: no heavy from this press
-    this.blockHeld = !!c.block && this.armed;
+    this.blockHeld = !!c.block && (this.armed || this.shielded); // a shield can be raised even bare-handed
 
     // --- starting moves: free, or in the recovery of a move that allows cancelling into this one ---
     const able = !gettingUp && grounded && c.canAct !== false;
@@ -797,7 +841,7 @@ export class Gladiator {
     // still pose: arms hanging at ease, or the ready stance while on guard
     const guard = ease(this.ease('guard', this.onGuard ? 1 : 0, this.onGuard ? 7 : 3.5, dt));
     const armed = this.armed;
-    const rest = armed ? RELAXED : RELAXED_BARE, ready = armed ? READY : READY_BARE;
+    const rest = armed ? RELAXED : RELAXED_BARE, ready = this.readyPose;
     for (const ch of CHANNELS) _still[ch] = lerp(rest[ch], ready[ch], guard);
     const live = 0.35 + 0.65 * guard; // hanging arms drift less than a held guard
     const bounce = Math.sin(t * 2.7) * guard; // fighter's weight bounce on the knees
@@ -850,9 +894,15 @@ export class Gladiator {
       for (const ch of CHANNELS) pose[ch] = lerp(pose[ch], a[ch], w);
     }
     // guard up: blade held across the body, free arm raised; strafing legs still come from the gait
+    // (with a shield, only the body turns to put it forward: the left arm is placed by gripIK, and the
+    // sword stays cocked to answer)
     if (this.blockW > 0.01) {
       const k = this.blockW * (1 - w);
-      for (const ch of GUARD_CHANNELS) pose[ch] = lerp(pose[ch], BLOCK[ch], k);
+      if (this.shielded) for (const ch of SHIELD_GUARD_CHANNELS) pose[ch] = lerp(pose[ch], SHIELD_BLOCK[ch], k);
+      else {
+        const B = this.spear ? SPEAR_BLOCK : BLOCK;
+        for (const ch of GUARD_CHANNELS) pose[ch] = lerp(pose[ch], B[ch], k);
+      }
     }
     // ease every channel so pose changes flow instead of snapping (attacks stay crisp)
     const rate = atk ? 40 : 14;
@@ -957,6 +1007,140 @@ export class Gladiator {
       -(pose.twist + pose.hipYaw) * 0.8 + (Math.sin(t * 0.43) * 0.2 + Math.sin(t * 1.07 + 1.3) * 0.07) * look,
       -pose.roll * 0.6 + Math.sin(t * 0.37 + 2.0) * 0.04 * look,
     );
+    this.gripIK(dt, guard, w, at, tuck);
+  }
+
+  /**
+   * Arms placed by where the hands must be rather than by joint angles: the spear (right hand on the grip,
+   * pointing the shaft; left hand further up the shaft) and the shield (left forearm held across the front,
+   * raised in front of the chest while blocking). Blended over the joint-angle pose by weight.
+   */
+  private gripIK(dt: number, guard: number, w: number, at: number, tuck: number) {
+    const atk = this.move, spear = this.spear;
+    const wR = this.ease('ikR', spear && (!atk || atk.spear) ? 1 : 0, 12, dt);
+    const wL = this.ease('ikL', spear ? Math.max(guard, atk ? 1 : 0) : 0, 10, dt);
+    const wS = this.ease('ikS', this.shielded ? guard * (1 - tuck) : 0, 10, dt);
+    this.gripL = wL;
+    if (spear) {
+      // still: upright at the side, levelled at the enemy on guard, or held across to block
+      const still = _spStill, tgt = _spTgt;
+      lerpGrip(SPEAR_REST, SPEAR_READY, guard, still);
+      if (this.blockW > 0.01) lerpGrip(still, SPEAR_GUARD, this.blockW * (1 - w), still);
+      if (atk?.spear) {
+        sampleGrip(atk.spear, at, this.chained ? this.chainSpear : null, still, tgt);
+        if (isAttack(this.moveKind)) {
+          // aiming high or low: the thrust rises or dips
+          tgt.h.y += this.attackAim * SPEAR_AIM_H;
+          tgt.d.y += this.attackAim * SPEAR_AIM_D;
+        }
+        lerpGrip(still, tgt, w, tgt);
+      } else lerpGrip(still, still, 0, tgt);
+      tgt.d.normalize();
+      const rate = atk ? 40 : 14;
+      const n = this.spearNow;
+      n.h.set(this.ease('spHx', tgt.h.x, rate, dt), this.ease('spHy', tgt.h.y, rate, dt), this.ease('spHz', tgt.h.z, rate, dt));
+      n.d.set(this.ease('spDx', tgt.d.x, rate, dt), this.ease('spDy', tgt.d.y, rate, dt), this.ease('spDz', tgt.d.z, rate, dt)).normalize();
+    }
+    if (wR < 0.002 && wL < 0.002 && wS < 0.002) return;
+    this.root.updateMatrixWorld(true);
+    const { armL, armR } = this;
+
+    if (wR >= 0.002) {
+      const gripW = this.root.localToWorld(_ikG.copy(this.spearNow.h));
+      const dir = _ikDir.copy(this.spearNow.d).transformDirection(this.root.matrixWorld);
+      const pole = _ikPole.set(-1, -1.2, -0.4).transformDirection(this.root.matrixWorld);
+      this.holdShaft(armR, gripW, dir, pole, GRIP_V, this.gripQ, wR);
+    }
+    if (wL >= 0.002) {
+      // the left hand closes on the shaft further up, the same way round as the right
+      // (sliding down toward the right hand when the shaft is out of the left arm's reach up there)
+      const sh = armL.upper.getWorldPosition(_ikS2);
+      const reach = (armL.lower.position.length() + armL.hand.position.length() + GRIP_L.length()) * 0.97;
+      const on = _ikG;
+      for (let along = SPEAR_LEFT_HAND; along >= 0.12; along -= 0.02) if (this.weaponMount.localToWorld(on.set(0, along, 0)).distanceTo(sh) < reach) break;
+      const dir = this.weaponMount.localToWorld(_ikDir.set(0, 1, 0)).sub(this.weaponMount.getWorldPosition(_ikW)).normalize();
+      const pole = _ikPole.set(1, -1.2, -0.3).transformDirection(this.root.matrixWorld);
+      this.holdShaft(armL, on, dir, pole, GRIP_L, this.gripQL, wL);
+    }
+    if (wS >= 0.002) {
+      // the shield: carried across the front of the left side, raised in front of the chest while blocking
+      const k = this.blockW, uc = this.upperChest;
+      const hold = _ikG.lerpVectors(SHIELD_CARRY.h, SHIELD_RAISE.h, k).add(armL.upper.position);
+      uc.localToWorld(hold);
+      const pole = _ikPole.lerpVectors(SHIELD_CARRY.pole, SHIELD_RAISE.pole, k).transformDirection(uc.matrixWorld);
+      const face = _ikDir.lerpVectors(SHIELD_CARRY.face, SHIELD_RAISE.face, k).transformDirection(uc.matrixWorld);
+      this.solveArm(armL, hold, pole, face, wS);
+    }
+    // a hand on the shaft or the shield's grip closes into a fist
+    this.curlL = lerp(this.curlL, 1.3, Math.max(wL, wS));
+  }
+
+  /**
+   * Close a fist on a shaft: the arm reaches so that the hand's grip point (`offset` from the wrist, in the
+   * hand's frame) lands on `point`, and the hand turns so the shaft runs through the fist along its +Z
+   * (pointing along `dir`), the back of the hand following on from the forearm. `q` keeps the hand's world
+   * rotation between frames: the wrist's place depends on it, so the two are settled in two passes.
+   */
+  private holdShaft(arm: Arm, point: THREE.Vector3, dir: THREE.Vector3, pole: THREE.Vector3, offset: THREE.Vector3, q: THREE.Quaternion, weight: number) {
+    _ikFkU.copy(arm.upper.quaternion);
+    _ikFkL.copy(arm.lower.quaternion);
+    for (let pass = 0; pass < 2; pass++) {
+      arm.upper.quaternion.copy(_ikFkU);
+      arm.lower.quaternion.copy(_ikFkL);
+      const wrist = _ikW.copy(offset).applyQuaternion(q).negate().add(point);
+      this.solveArm(arm, wrist, pole, null, pass === 0 ? 1 : weight);
+      const el = arm.lower.getWorldPosition(_ikE2), wr = arm.hand.getWorldPosition(_ikH2);
+      const y = el.sub(wr);
+      y.addScaledVector(dir, -y.dot(dir));
+      if (y.lengthSq() < 1e-8) y.set(0, 1, 0).addScaledVector(dir, -dir.y);
+      y.normalize();
+      q.setFromRotationMatrix(_m.makeBasis(_ikX.crossVectors(y, dir), y, dir));
+    }
+    arm.lower.getWorldQuaternion(_ikQ).invert().multiply(q);
+    arm.hand.quaternion.slerp(_ikQ, weight);
+    arm.upper.updateMatrixWorld(true);
+  }
+
+  /**
+   * Two-bone IK for an arm: shoulder → elbow → wrist, wrist at `wrist`, elbow bowed toward `pole` (all world).
+   * The forearm rolls so its +X faces `face` (where a shield looks), or follows the upper arm if null.
+   * Blended over the arm's current pose by `weight`.
+   */
+  private solveArm(arm: Arm, wrist: THREE.Vector3, pole: THREE.Vector3, face: THREE.Vector3 | null, weight: number) {
+    const L1 = arm.lower.position.length(), L2 = arm.hand.position.length();
+    const S = arm.upper.getWorldPosition(_ikS);
+    const dir = _ikD.subVectors(wrist, S);
+    const dist = dir.length();
+    if (dist < 1e-4) return;
+    dir.divideScalar(dist);
+    const d = clamp(dist, Math.abs(L1 - L2) + 0.02, (L1 + L2) * 0.999);
+    const a = (L1 * L1 - L2 * L2 + d * d) / (2 * d), h = Math.sqrt(Math.max(0, L1 * L1 - a * a));
+    const side = _ikP.copy(pole).addScaledVector(dir, -pole.dot(dir));
+    if (side.lengthSq() < 1e-8) side.set(dir.y, -dir.x, 0);
+    side.normalize();
+    const E = _ikE.copy(S).addScaledVector(dir, a).addScaledVector(side, h);
+    const H = _ikH.copy(S).addScaledVector(dir, d);
+    // upper arm: -Y along shoulder → elbow, +Z the way the forearm folds (the elbow closes about X)
+    const yu = _ikYu.subVectors(S, E).normalize();
+    const f = _ikF.subVectors(H, E).normalize();
+    const zu = _ikZu.copy(f).addScaledVector(yu, -f.dot(yu));
+    if (zu.lengthSq() < 1e-8) zu.copy(side).negate();
+    zu.normalize();
+    const xu = _ikXu.crossVectors(yu, zu);
+    const qU = _ikQU.setFromRotationMatrix(_m.makeBasis(xu, yu, zu));
+    // forearm: -Y along elbow → wrist, rolled to face `face`
+    const yl = _ikYl.copy(f).negate();
+    const want = face ?? xu;
+    const xl = _ikXl.copy(want).addScaledVector(yl, -want.dot(yl));
+    if (xl.lengthSq() < 1e-8) xl.copy(xu);
+    xl.normalize();
+    const zl = _ikZl.crossVectors(xl, yl);
+    const qL = _ikQL.setFromRotationMatrix(_m.makeBasis(xl, yl, zl));
+    arm.upper.parent!.getWorldQuaternion(_ikQ).invert().multiply(qU);
+    arm.upper.quaternion.slerp(_ikQ, weight);
+    _ikQ.copy(qU).invert().multiply(qL);
+    arm.lower.quaternion.slerp(_ikQ, weight);
+    arm.upper.updateMatrixWorld(true);
   }
 
   /** Two-bone IK in the leg's sagittal plane: put the ankle at (tz, ty) from the hip. */
@@ -1163,6 +1347,34 @@ interface Move {
   iframes?: [number, number];
   /** Seconds into the move during which a blow from the front is deflected (parry). */
   parry?: [number, number];
+  /** Spear moves: where the right hand holds the spear and the way it points, [fraction of time, grip]; null: the stance's grip. */
+  spear?: [number, Grip | null][];
+}
+
+/** How the spear is held, in the fighter's own frame (metres from the feet; +Z forward, +X left): grip point, and the way the head points. */
+interface Grip {
+  h: THREE.Vector3;
+  d: THREE.Vector3;
+}
+const grip = (h: [number, number, number], d: [number, number, number]): Grip => ({ h: new THREE.Vector3(...h), d: new THREE.Vector3(...d).normalize() });
+const _spStill: Grip = grip([0, 1, 0], [0, 0, 1]), _spTgt: Grip = grip([0, 1, 0], [0, 0, 1]), _spA: Grip = grip([0, 1, 0], [0, 0, 1]);
+function lerpGrip(a: Grip, b: Grip, k: number, out: Grip) {
+  out.h.lerpVectors(a.h, b.h, k);
+  out.d.lerpVectors(a.d, b.d, k);
+  return out;
+}
+/** Grip at t = 0..1 through a move's spear keys (null keys: `still`). Before the first key: held there, or swept in from `from` when chained. */
+function sampleGrip(keys: [number, Grip | null][], t: number, from: Grip | null, still: Grip, out: Grip) {
+  const at = (k: Grip | null) => k ?? still;
+  if (t < keys[0][0]) {
+    if (!from) return lerpGrip(at(keys[0][1]), at(keys[0][1]), 0, out);
+    return lerpGrip(from, at(keys[0][1]), ease(t / keys[0][0]), out);
+  }
+  let i = 0;
+  while (i < keys.length - 2 && t > keys[i + 1][0]) i++;
+  const [t0, a] = keys[i], [t1, b] = keys[i + 1];
+  lerpGrip(at(a), _spA, 0, _spA); // copy, in case `out` is `a` or `b`
+  return lerpGrip(_spA, at(b), ease(clamp((t - t0) / (t1 - t0), 0, 1)), out);
 }
 
 const bell = (t: number, a: number, b: number) => (t <= a || t >= b ? 0 : Math.sin((Math.PI * (t - a)) / (b - a)));
@@ -1498,3 +1710,137 @@ const STRIKE_LEAD = 0.16, STRIKE_FOLLOW = 0.1;
 const AIM_ARM = 0.5, AIM_LEAN = 0.12, AIM_CROUCH = 0.1;
 const FIST_CURL = 1.3; // right hand gripping the sword, radians per finger joint
 const GRIP = { x: 0.03, y: -0.09, z: 0.0 }; // sword grip, relative to the right wrist
+
+// ------------------------------------------------------------------ spear and shield
+// The spear is pointed by placing the hands (gripIK), so its moves carry grips as well as body poses: the
+// body keys below take the legs, hips and torso, and the arm channels are left to the IK.
+
+/** Spear stance: left side turned well forward (both hands on the shaft), lower and wider. */
+const READY_SPEAR: Pose = { ...READY, twist: -0.25, hipYaw: -0.55, lean: 0.12, drop: 0.1, fzL: 0.26, fzR: -0.22, width: 0.06 };
+/** Spear held up across the body to take a blow on the shaft. */
+const SPEAR_BLOCK: Pose = { ...READY_SPEAR, twist: -0.1, hipYaw: -0.45, drop: 0.13, lean: 0.06 };
+/** Grips: upright at the side at rest, levelled at the enemy on guard (head a little up), across the front to block.
+ *  The right hand stays out by the right hip and the head angles in, so the butt behind it passes beside the body. */
+const SPEAR_REST = grip([-0.27, 0.98, 0.1], [0, 1, 0.15]);
+const SPEAR_READY = grip([-0.21, 1.0, 0.22], [0.15, 0.18, 1]);
+const SPEAR_GUARD = grip([-0.24, 1.32, 0.34], [1, 0.15, 0.2]);
+/** Where the left hand closes on the shaft, metres up from the right hand's grip. */
+const SPEAR_LEFT_HAND = 0.34;
+/** Aiming a thrust high or low: grip raised (m) and head tipped (direction y) at full aim. */
+const SPEAR_AIM_H = 0.18, SPEAR_AIM_D = 0.3;
+
+/**
+ * Spear attacks: thrusts, not cuts. Quick jabs that reach far past a sword, a lunge to finish the
+ * string, and an overhand downward thrust as the heavy. Recovery is a little longer than the sword's,
+ * and a parried spear reels longest of all (`parriedStun` on the item).
+ */
+const SPEAR_ATTACKS: Record<AttackKind, Move> = {
+  // jab: draw back, drive the point straight out at chest height off the front foot
+  l1: {
+    time: 0.52, strikeAt: 0.5, cancel: AFTER(0.5) + 0.04,
+    speed: (t) => 1.8 * bell(t, 0.25, 0.6),
+    keys: [
+      [0.25, { twist: -0.4, hipYaw: -0.6, lean: 0.05, drop: 0.1, fzL: 0.26, fzR: -0.22 }],
+      [0.5, { twist: 0.0, hipYaw: -0.35, lean: 0.25, drop: 0.13, fzL: 0.32, fzR: -0.22 }],
+      [0.72, { twist: -0.05, hipYaw: -0.4, lean: 0.22, drop: 0.12 }],
+      [1, {}],
+    ],
+    spear: [
+      [0.25, grip([-0.25, 1.0, 0.04], [0.14, 0.12, 1])],
+      [0.5, grip([-0.02, 1.12, 0.56], [0, 0.04, 1])],
+      [0.72, grip([-0.04, 1.1, 0.46], [0, 0.06, 1])],
+      [1, null],
+    ],
+  },
+  // second jab, higher: at the face
+  l2: {
+    time: 0.54, strikeAt: 0.48, cancel: AFTER(0.48) + 0.04,
+    speed: (t) => 1.8 * bell(t, 0.2, 0.58),
+    keys: [
+      [0.22, { twist: -0.45, hipYaw: -0.6, lean: 0.02, drop: 0.1 }],
+      [0.48, { twist: 0.05, hipYaw: -0.3, lean: 0.2, drop: 0.1, fzL: 0.3, fzR: -0.22 }],
+      [0.7, { twist: 0, hipYaw: -0.35, lean: 0.18, drop: 0.1 }],
+      [1, {}],
+    ],
+    spear: [
+      [0.22, grip([-0.25, 1.12, 0.05], [0.13, 0.25, 1])],
+      [0.48, grip([-0.02, 1.32, 0.56], [0, 0.12, 1])],
+      [0.7, grip([-0.04, 1.28, 0.46], [0, 0.15, 1])],
+      [1, null],
+    ],
+  },
+  // lunge: a long step in on the front foot behind the whole length of the arms
+  l3: {
+    time: 0.8, strikeAt: 0.5, cancel: AFTER(0.5) + 0.05,
+    speed: (t) => 3.2 * bell(t, 0.15, 0.6),
+    keys: [
+      [0.3, { twist: -0.5, hipYaw: -0.65, lean: 0, drop: 0.08, fzL: 0.12, fzR: -0.24 }],
+      [0.52, { twist: 0.1, hipYaw: -0.25, lean: 0.4, drop: 0.2, fzL: 0.5, fzR: -0.4 }],
+      [0.74, { twist: 0.05, hipYaw: -0.3, lean: 0.38, drop: 0.19, fzL: 0.48, fzR: -0.38 }],
+      [1, {}],
+    ],
+    spear: [
+      [0.3, grip([-0.28, 1.0, -0.02], [0.15, 0.1, 1])],
+      [0.52, grip([0, 1.08, 0.62], [0, 0, 1])],
+      [0.74, grip([-0.02, 1.06, 0.54], [0, 0.02, 1])],
+      [1, null],
+    ],
+  },
+  // heavy: spear raised overhand above the shoulder (held there while charging), then driven down and forward
+  heavy: {
+    time: 1.2, strikeAt: 0.58, chargeAt: 0.34, cancel: AFTER(0.62),
+    speed: (t) => 3.4 * bell(t, 0.4, 0.68),
+    keys: [
+      [0.34, { twist: -0.55, hipYaw: -0.6, lean: -0.1, drop: 0.12, fzL: 0.12, fzR: -0.3 }],
+      [0.6, { twist: 0.1, hipYaw: -0.2, lean: 0.45, drop: 0.22, fzL: 0.55, fzR: -0.42 }],
+      [0.8, { twist: 0.08, hipYaw: -0.25, lean: 0.42, drop: 0.22, fzL: 0.5, fzR: -0.4 }],
+      [1, {}],
+    ],
+    spear: [
+      [0.34, grip([-0.28, 1.62, -0.08], [0.1, -0.12, 1])],
+      [0.6, grip([-0.02, 1.48, 0.6], [0, -0.22, 1])],
+      [0.8, grip([-0.03, 1.44, 0.5], [0, -0.2, 1])],
+      [1, null],
+    ],
+  },
+};
+/** Spear parry: the shaft beats across the front, right to left, knocking the blow wide. */
+const SPEAR_PARRY: Move = {
+  ...REACTIONS.parry,
+  keys: [
+    [0.12, { twist: -0.4, hipYaw: -0.55, drop: 0.12 }],
+    [0.36, { twist: -0.05, hipYaw: -0.45, drop: 0.13, fzL: 0.27, fzR: -0.22 }],
+    [0.6, { twist: -0.1, hipYaw: -0.5, drop: 0.12 }],
+    [1, {}],
+  ],
+  spear: [
+    [0.12, grip([-0.22, 1.15, 0.26], [-0.3, 0.45, 1])],
+    [0.36, grip([-0.16, 1.15, 0.32], [0.5, 0.4, 1])],
+    [0.6, grip([-0.18, 1.1, 0.28], [0.3, 0.3, 1])],
+    [1, null],
+  ],
+};
+
+/**
+ * Shield hold, in the upper chest's frame relative to the left shoulder (+Z forward, +X left): where the
+ * wrist goes, which way the elbow bows, and which way the face looks. Carried across the front of the
+ * left side on guard; raised in front of the chest, face to the front, while blocking.
+ */
+const SHIELD_CARRY = { h: new THREE.Vector3(-0.15, -0.3, 0.33), pole: new THREE.Vector3(1, -0.8, -0.2), face: new THREE.Vector3(0.6, 0.1, 1).normalize() };
+const SHIELD_RAISE = { h: new THREE.Vector3(-0.17, -0.08, 0.33), pole: new THREE.Vector3(1, -0.5, 0), face: new THREE.Vector3(0.15, 0.05, 1).normalize() };
+/** Blocking with a shield turns the body to put it forward; the arms are the IK's. */
+const SHIELD_GUARD_CHANNELS = ['twist', 'drop', 'lean'] as const;
+const SHIELD_BLOCK: Record<(typeof SHIELD_GUARD_CHANNELS)[number], number> = { twist: -0.2, drop: 0.13, lean: 0.1 };
+/** Shield's centre off the forearm's axis (m), toward its face. */
+const SHIELD_OUT = 0.07;
+/** The weapon grip relative to the right wrist, as a vector. */
+const GRIP_V = new THREE.Vector3(GRIP.x, GRIP.y, GRIP.z);
+/** The left hand's grip point: the right's, mirrored (its palm faces the other way). */
+const GRIP_L = new THREE.Vector3(-GRIP.x, GRIP.y, GRIP.z);
+
+const _ikS = new THREE.Vector3(), _ikD = new THREE.Vector3(), _ikP = new THREE.Vector3(), _ikE = new THREE.Vector3(), _ikH = new THREE.Vector3();
+const _ikYu = new THREE.Vector3(), _ikZu = new THREE.Vector3(), _ikXu = new THREE.Vector3(), _ikF = new THREE.Vector3();
+const _ikYl = new THREE.Vector3(), _ikXl = new THREE.Vector3(), _ikZl = new THREE.Vector3();
+const _ikG = new THREE.Vector3(), _ikDir = new THREE.Vector3(), _ikPole = new THREE.Vector3(), _ikW = new THREE.Vector3();
+const _ikS2 = new THREE.Vector3(), _ikE2 = new THREE.Vector3(), _ikH2 = new THREE.Vector3(), _ikX = new THREE.Vector3();
+const _ikQ = new THREE.Quaternion(), _ikQU = new THREE.Quaternion(), _ikQL = new THREE.Quaternion(), _ikFkU = new THREE.Quaternion(), _ikFkL = new THREE.Quaternion();
