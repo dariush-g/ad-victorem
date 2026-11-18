@@ -7,7 +7,9 @@ cd "$(dirname "$0")"
 npm ci --no-audit --no-fund
 npm run build
 if [ -n "${STUDENT:-}" ] && command -v svc >/dev/null; then
+  # `svc start` leaves an already-running service alone, so restart it to load the new build
   svc start duel "node dist/server.js"
+  svc restart duel
 else
   exec npm start
 fi
