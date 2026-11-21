@@ -7,8 +7,8 @@ import { Inventory, createInventoryUI, clashingSlot } from './inventory';
 import { findOpponent, makeCode, cleanCode, cleanName, type Link, type Mode, type Msg, type Search, type Seat } from './net';
 import { account, buyItem, fetchLeaderboard, USERNAME, PASSWORD_MIN } from './account';
 import {
-  grantWin, spendPoint, loadLocalCareer, saveLocalCareer, freshCareer, loadLocalOwned, saveLocalOwned, loadLocalGear, saveLocalGear,
-  WIN_XP, WIN_MONEY, type Career,
+  grantKill, grantWin, spendPoint, loadLocalCareer, saveLocalCareer, freshCareer, loadLocalOwned, saveLocalOwned, loadLocalGear, saveLocalGear,
+  totalXp, type Career,
 } from './career';
 import type { StatName } from './stats';
 import { BASE_DAMAGE, ZONES, ZONE_LIST, protection, touchedPart } from './hits';
@@ -116,22 +116,22 @@ function applyCareer() {
   if (ui.open && ui.tab === SHEET_TAB) sheet.render();
 }
 
-/** Tell the player what a win brought: experience, money, and any levels. */
+/** Tell the player what a win or a kill brought: experience, money, and any levels. */
 function celebrate(before: Career, after: Career) {
-  if (after.level === before.level && after.xp === before.xp && after.money === before.money) return;
-  const gained = after.level - before.level;
+  const xp = totalXp(after) - totalXp(before), money = after.money - before.money;
+  if (xp <= 0 && money <= 0) return;
   ui.toast(
-    gained > 0
-      ? `Level up! Level ${after.level} · +${after.money - before.money} gold · press C to spend your skill ${after.points === 1 ? 'point' : 'points'}`
-      : `+${WIN_XP} XP · +${WIN_MONEY} gold`,
+    after.level > before.level
+      ? `Level up! Level ${after.level} · +${money} gold · press C to spend your skill ${after.points === 1 ? 'point' : 'points'}`
+      : `+${xp} XP · +${money} gold`,
   );
 }
 
-/** A guest's win: awarded here and kept in this browser. (Logged in, the server awards it and sends the new career.) */
-function rewardGuestWin() {
-  if (account.loggedIn) return;
+/** A guest's rewards (a kill, a win): awarded here and kept in this browser. (Logged in, the server awards them and sends the new career.) */
+function rewardGuest(grants: ((c: Career) => number)[]) {
+  if (account.loggedIn || grants.length === 0) return;
   const before = structuredClone(localCareer);
-  grantWin(localCareer);
+  for (const g of grants) g(localCareer);
   saveLocalCareer(localCareer);
   applyCareer();
   celebrate(before, localCareer);
@@ -420,6 +420,7 @@ function beginMatch() {
     f.card.classList.toggle('out', f.gone);
   }
   riposteUntil = 0;
+  lastBlowBy = null;
 }
 
 /** Everything here comes from another player's machine: check it before using it. */
@@ -485,6 +486,7 @@ function onMessage(m: Msg, from: number) {
         impact(0.1, 0.4);
         break;
       }
+      lastBlowBy = from; // it touches us from here on (block chip, a broken guard, a wound): if we fall, this blow counts
       // a shield covers a wider arc than a blade held across the body, for less stamina, and lets less through
       const shield = inventory.equipped.shield ? ITEMS[inventory.equipped.shield].guard : undefined;
       const guard = shield ?? { cost: BLOCK_STAMINA, chip: BLOCK_CHIP, arc: FRONT_COS };
@@ -527,13 +529,18 @@ function onMessage(m: Msg, from: number) {
       if (vitals.dead) die();
       break;
     }
-    case 'dead':
+    case 'dead': {
+      if (remote.dead) break;
+      // they name who dealt the last blow: if it was us, the kill is ours
+      const slew = m.by === link.seat;
       remote.hp = 0;
       remote.dead = true;
       foe.card.classList.add('out');
-      if (phase === 'fight' && foes.some(standing)) ui.toast(`${foe.name} has fallen`);
-      checkVictory();
+      if (phase === 'fight' && foes.some(standing)) ui.toast(slew ? `You slew ${foe.name}` : `${foe.name} has fallen`);
+      const won = checkVictory();
+      rewardGuest([...(slew ? [grantKill] : []), ...(won ? [grantWin] : [])]);
       break;
+    }
     case 'rematch':
       if (link.mode !== 'duel' || phase !== 'over' || rematch.closed) break;
       rematch.theirs = true;
@@ -542,12 +549,12 @@ function onMessage(m: Msg, from: number) {
   }
 }
 
-/** We are the last one standing: the bout is ours. */
-function checkVictory() {
-  if ((phase !== 'fight' && phase !== 'countdown') || vitals.dead || foes.some(standing)) return;
+/** We are the last one standing: the bout is ours. True if the win pays (as on the server: not if everyone fled). */
+function checkVictory(): boolean {
+  if ((phase !== 'fight' && phase !== 'countdown') || vitals.dead || foes.some(standing)) return false;
   const fled = foes.every((f) => f.gone && !f.remote.dead);
   finish('Victory', fled ? (foes.length > 1 ? 'Your opponents fled' : 'Your opponent fled') : link?.mode === 'ffa' ? 'Last one standing' : '');
-  if (!fled) rewardGuestWin(); // as on the server: a win where everyone fled earns nothing
+  return !fled;
 }
 
 /** A fighter has left the match: mid-bout that counts as fleeing (out of the bout). */
@@ -559,7 +566,7 @@ function onLeft(seat: number) {
   f.card.classList.add('out');
   if (phase === 'fight' || phase === 'countdown') {
     ui.toast(`${f.name} has fled`);
-    checkVictory();
+    if (checkVictory()) rewardGuest([grantWin]);
   } else if (phase === 'over' && link?.mode === 'duel' && !rematch.closed) {
     rematch.closed = rematch.mine ? 'Your opponent did not take the rematch' : 'Your opponent has left';
   }
@@ -587,7 +594,7 @@ function hangUp() {
 function die() {
   if (phase !== 'fight') return;
   player.collapse();
-  link?.send({ t: 'dead' });
+  link?.send(lastBlowBy === null ? { t: 'dead' } : { t: 'dead', by: lastBlowBy });
   const left = foes.filter(standing).length;
   finish('Defeat', link?.mode === 'ffa' && left > 1 ? `${left} fighters still standing` : '');
 }
@@ -815,6 +822,8 @@ let swingSeen = -1, wasStriking = false;
 const foesStruck = new Set<number>();
 /** Until when (ms) our parry has the opponent reeling: the next blow that lands is a riposte. */
 let riposteUntil = 0;
+/** The seat whose blow last touched us this bout: named in our `dead`, so they get the kill (bleeding out counts). */
+let lastBlowBy: number | null = null;
 const RIPOSTE_MS = 1300, RIPOSTE_MULT = 3;
 // defending: a blow counts as from the front within about 70° of where we face
 const FRONT_COS = 0.35;

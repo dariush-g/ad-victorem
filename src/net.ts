@@ -59,7 +59,8 @@ export type Msg =
   | { t: 'parried' }
   /** Your blow landed on a raised guard and bounced off. */
   | { t: 'blocked' }
-  | { t: 'dead' }
+  /** Fell; `by` is the seat whose blow last touched us, if any (they get the kill). */
+  | { t: 'dead'; by?: number }
   /** Wants to fight again on the same connection. */
   | { t: 'rematch' }
   /** Has left for good (back to the menu, or a new match). */

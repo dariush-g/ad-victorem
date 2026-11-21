@@ -30,9 +30,10 @@
  * fighter in the match.
  *
  * Accounts (accounts.ts) are optional. The server settles each bout itself: whoever sends `dead` (or
- * leaves mid-bout) is out, and the last fighter standing wins. A logged-in winner gets the win's
- * experience and money (career.ts) if at least one fighter fell to them; each account that fell (not
- * fled) and is not the winner's records a loss.
+ * leaves mid-bout) is out, and the last fighter standing wins. A logged-in winner gets the win (on the
+ * leaderboard) and its experience and money (career.ts) if at least one other fighter fell, guest or
+ * not; each account that fell (not fled) records a loss. `dead` names the seat that dealt the last
+ * blow (`by`): a logged-in slayer gets a kill's experience and money.
  */
 import { createServer } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -163,20 +164,36 @@ function begin(m: Match) {
 }
 
 /**
- * `c` is out of the bout: fell, or (`fled`) left mid-bout. Once one fighter stands alone, the bout is
- * theirs. A win only pays if someone actually fell to it, so nobody farms wins off friends who leave.
+ * `c` is out of the bout: fell (to the fighter in seat `by`, if known), or (`fled`) left mid-bout. Once
+ * one fighter stands alone, the bout is theirs. A win only pays if someone else actually fell to it, so
+ * nobody farms wins off friends who leave, or off a second tab logged in as themselves.
  */
-function fall(c: Client, fled = false) {
+function fall(c: Client, fled = false, by?: unknown) {
   const m = c.match;
   if (!m || !m.started || m.decided || !m.alive.delete(c)) return;
-  if (!fled) m.fallen.push(c);
-  if (m.alive.size > 1) return;
-  m.decided = true;
-  const [winner] = m.alive;
-  if (!winner?.account || m.fallen.length === 0) return; // a guest's win is theirs to count, locally
-  accounts.awardWin(winner.account);
-  for (const l of m.fallen) if (l.account && l.account !== winner.account) accounts.recordResult(winner.account, l.account);
-  for (const x of [winner, ...m.fallen]) {
+  const changed = new Set<Client>();
+  if (!fled) {
+    m.fallen.push(c);
+    const slayer = typeof by === 'number' ? m.seats[by] : undefined;
+    if (slayer && slayer !== c && !slayer.closed && slayer.account && slayer.account !== c.account) {
+      accounts.awardKill(slayer.account);
+      changed.add(slayer);
+    }
+  }
+  if (m.alive.size <= 1) {
+    m.decided = true;
+    const [winner] = m.alive;
+    const beaten = m.fallen.filter((l) => !winner?.account || l.account !== winner.account);
+    if (winner?.account && beaten.length > 0) {
+      accounts.awardWin(winner.account);
+      changed.add(winner);
+    }
+    if (winner) for (const l of beaten) if (l.account) {
+      accounts.recordLoss(l.account);
+      changed.add(l);
+    }
+  }
+  for (const x of changed) {
     const profile = x.account && accounts.getProfile(x.account);
     if (profile) send(x, { op: 'profile', profile: { ...profile, progress: undefined } });
   }
@@ -385,7 +402,7 @@ function receive(c: Client, raw: string, viaUdp: boolean) {
       const m = c.match;
       if (!m?.started || !f.m || typeof f.m !== 'object') return;
       const t = (f.m as { t?: unknown }).t;
-      if (t === 'dead') fall(c);
+      if (t === 'dead') fall(c, false, (f.m as { by?: unknown }).by);
       else if (t === 'rematch') rematch(c);
       else if (t === 'leave') return leave(c);
       const frame = { op: 'msg', m: f.m, from: c.seat };

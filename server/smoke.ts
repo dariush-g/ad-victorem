@@ -5,6 +5,9 @@
  *     UDP data channel (or the WebSocket, on a server without UDP), and the friend hears the host leave.
  *  2. Free-for-all: three fighters join the open queue, all vote to start, and the match begins with
  *     each in their own seat. A message addressed to one seat reaches only that fighter.
+ *  3. Results: an account duels a guest and slays them. The account gets the kill and the win (on
+ *     the leaderboard), even though the one who fell had no account. Registers a throwaway account
+ *     (smoke_<random>), so point it at a test server.
  */
 import { WebSocket } from 'ws';
 import { RTCPeerConnection } from 'node-datachannel/polyfill';
@@ -108,6 +111,33 @@ await wait(400);
 check('the others hear a fighter leave', c0.got.some((f) => f.op === 'left' && f.seat === s2) && c1.got.some((f) => f.op === 'left' && f.seat === s2));
 c0.close();
 c1.close();
+
+// --- 3. a kill and a win against a guest are recorded ---
+const user = `smoke_${Math.random().toString(36).slice(2, 10)}`;
+const reg = new WebSocket(URL);
+const token = await Promise.race([
+  new Promise<string>((res, rej) => {
+    reg.on('open', () => reg.send(JSON.stringify({ op: 'register', id: 1, name: user, password: 'smoke-test-pass' })));
+    reg.on('message', (raw) => {
+      const f = JSON.parse(raw.toString());
+      if (f.op === 'reply') (f.ok ? res(f.token) : rej(new Error(`register failed: ${f.why}`)));
+    });
+  }),
+  timeout(5000, 'register'),
+]);
+reg.close();
+const host = client(user, { mode: 'host', code: 'FGHJK', token });
+await wait(300);
+const guest = client('Guest', { mode: 'join', code: 'FGHJK' });
+const [sh] = await Promise.race([Promise.all([host.startP, guest.startP]), timeout(5000, 'results duel start')]);
+guest.event({ t: 'dead', by: sh.seat });
+await wait(500);
+const prof = host.got.filter((f) => f.op === 'profile').at(-1)?.profile as { wins: number; career: { level: number; xp: number; money: number } } | undefined;
+// kill 50 XP + 25 gold, win 100 XP + 50 gold: 150 XP is level 2 (100) with 50 over, and the level brings 100 gold
+check('beating a guest counts the win', prof?.wins === 1);
+check('the kill and the win both pay', prof?.career.level === 2 && prof.career.xp === 50 && prof.career.money === 175);
+host.close();
+guest.close();
 
 const ok = checks.every(([, v]) => v);
 console.log(ok ? 'SMOKE OK' : 'SMOKE FAILED');

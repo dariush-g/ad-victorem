@@ -16,7 +16,7 @@
 import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { cleanCareer, freshCareer, grantWin, spendPoint, type Career, type StatName } from './career.js';
+import { cleanCareer, freshCareer, grantKill, grantWin, spendPoint, type Career, type StatName } from './career.js';
 import { ALL_ITEMS, PRICES, STARTER, isItem } from './shop.js';
 
 const DATA_FILE = process.env.DATA_FILE ?? 'data/accounts.json';
@@ -251,20 +251,28 @@ export function saveProgress(key: string, progress: unknown): boolean {
   return true;
 }
 
-/** A bout between two accounts: counts toward the leaderboard. */
-export function recordResult(winner: string, loser: string) {
-  const w = store.accounts[winner], l = store.accounts[loser];
-  if (!w || !l || winner === loser) return;
-  w.wins++;
-  l.losses++;
-  persist();
-}
-
-/** A won bout's experience and money (against an account or a guest). */
+/** A won bout (someone fell to it, account or guest): counts toward the leaderboard, and pays its experience and money. */
 export function awardWin(key: string) {
   const a = store.accounts[key];
   if (!a) return;
+  a.wins++;
   grantWin((a.career ??= freshCareer()));
+  persist();
+}
+
+/** Fell in a bout someone else won. */
+export function recordLoss(key: string) {
+  const a = store.accounts[key];
+  if (!a) return;
+  a.losses++;
+  persist();
+}
+
+/** Slew an opponent (the last blow was theirs): experience and money. */
+export function awardKill(key: string) {
+  const a = store.accounts[key];
+  if (!a) return;
+  grantKill((a.career ??= freshCareer()));
   persist();
 }
 

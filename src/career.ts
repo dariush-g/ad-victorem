@@ -4,14 +4,15 @@ import { STAT_MAX, STAT_NAMES, type StatName } from './stats';
  * A gladiator's career: level, experience, unspent skill points, money (gold) and the four
  * stats those points went into.
  *
- * Winning a bout earns WIN_XP and WIN_MONEY. Each level takes a little more experience than the
+ * Winning a bout earns WIN_XP and WIN_MONEY, and each opponent slain (the last blow was yours)
+ * KILL_XP and KILL_MONEY. Each level takes a little more experience than the
  * last (xpToNext), and every level gained brings one skill point and LEVEL_MONEY.
  *
  * Logged in, the duel server keeps the career and does the awarding (server/career.ts is its copy
  * of these rules: keep the two in step). As a guest the career lives in this browser's
  * localStorage only; creating an account carries it over.
  */
-export const WIN_XP = 100, WIN_MONEY = 50, LEVEL_MONEY = 100;
+export const WIN_XP = 100, WIN_MONEY = 50, KILL_XP = 50, KILL_MONEY = 25, LEVEL_MONEY = 100;
 
 /** Experience needed to go from `level` to the next: 100, then 25 more for each level after. */
 export const xpToNext = (level: number) => 100 + 25 * (level - 1);
@@ -49,10 +50,10 @@ export function cleanCareer(raw: unknown): Career {
   return c;
 }
 
-/** Award a win. Returns how many levels it brought. */
-export function grantWin(c: Career): number {
-  c.money += WIN_MONEY;
-  c.xp += WIN_XP;
+/** Add experience and money. Returns how many levels it brought (each one a skill point and LEVEL_MONEY). */
+export function grant(c: Career, xp: number, money: number): number {
+  c.money += money;
+  c.xp += xp;
   let levels = 0;
   while (c.xp >= xpToNext(c.level)) {
     c.xp -= xpToNext(c.level);
@@ -62,6 +63,18 @@ export function grantWin(c: Career): number {
     levels++;
   }
   return levels;
+}
+
+/** Award a won bout. */
+export const grantWin = (c: Career) => grant(c, WIN_XP, WIN_MONEY);
+/** Award an opponent slain. */
+export const grantKill = (c: Career) => grant(c, KILL_XP, KILL_MONEY);
+
+/** All the experience a career has gathered, from level 1: for telling how much a reward added. */
+export function totalXp(c: Career): number {
+  let n = c.xp;
+  for (let l = 1; l < c.level; l++) n += xpToNext(l);
+  return n;
 }
 
 /** Put a skill point into a stat. False if there is no point to spend or the stat is at its cap. */
